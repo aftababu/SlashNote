@@ -1,12 +1,35 @@
-import { useTheme, defaultThemeColors } from "../../context/ThemeContext";
+import {
+  useTheme,
+  defaultThemeColors,
+  defaultSoftPaperFolderColors,
+} from "../../context/ThemeContext";
 import { Button, CodeCopyButton, IconButton, Input, Select } from "../ui";
 import { ColorPicker } from "../ui/ColorPicker";
 import type {
+  AppThemeName,
   FontFamily,
   TextDirection,
   EditorWidth,
   ThemeColorKey,
+  SoftPaperFolderColorKey,
 } from "../../types/note";
+
+const themePresetOptions: { value: AppThemeName; label: string }[] = [
+  { value: "slashnote", label: "SlashNote" },
+  { value: "obsidian-soft-paper", label: "Obsidian Soft Paper" },
+];
+
+const softPaperFolderColorLabels: {
+  key: SoftPaperFolderColorKey;
+  label: string;
+}[] = [
+  { key: "folder-1", label: "Folder Category 1 (Rose)" },
+  { key: "folder-2", label: "Folder Category 2 (Lavender)" },
+  { key: "folder-3", label: "Folder Category 3 (Amber)" },
+  { key: "folder-expanded", label: "Expanded / Active Folder" },
+  { key: "folder-default", label: "Other Folders" },
+  { key: "root-note", label: "Root Note Pill" },
+];
 import { ChevronRightIcon, EyeIcon, MinusIcon, PlusIcon } from "../icons";
 import { cn } from "../../lib/utils";
 
@@ -59,8 +82,10 @@ const boldWeightOptions = [
 export function AppearanceSettingsSection() {
   const {
     theme,
+    themeName,
     resolvedTheme,
     setTheme,
+    setThemeName,
     editorFontSettings,
     setEditorFontSetting,
     resetEditorFontSettings,
@@ -77,6 +102,11 @@ export function AppearanceSettingsSection() {
     setCustomColor,
     resetCustomColor,
     resetAllCustomColors,
+    softPaperFolderColorsLight,
+    softPaperFolderColorsDark,
+    setSoftPaperFolderColor,
+    resetSoftPaperFolderColor,
+    resetAllSoftPaperFolderColors,
   } = useTheme();
 
   // Validated numeric change handler
@@ -122,6 +152,21 @@ export function AppearanceSettingsSection() {
       {/* Theme Section */}
       <section className="pb-2">
         <h2 className="text-xl font-medium mb-3">Theme</h2>
+        <div className="mb-3">
+          <div className="flex gap-2 p-1 rounded-[10px] border border-border">
+            {themePresetOptions.map((opt) => (
+              <Button
+                key={opt.value}
+                onClick={() => setThemeName(opt.value)}
+                variant={themeName === opt.value ? "segmented" : "ghost"}
+                size="md"
+                className="flex-1"
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </div>
+        </div>
         <div className="flex gap-2 p-1 rounded-[10px] border border-border">
           {(["light", "dark", "system"] as const).map((mode) => (
             <Button
@@ -142,7 +187,42 @@ export function AppearanceSettingsSection() {
         )}
 
         {/* Customize Colors */}
-        {theme === "system" ? (
+        {themeName === "obsidian-soft-paper" ? (
+          theme === "system" ? (
+            <div className="mt-4 space-y-2">
+              <SoftPaperFolderColorsExpandable
+                label="Customize sidebar folder colors (Light)"
+                mode="light"
+                folderColors={softPaperFolderColorsLight}
+                setFolderColor={setSoftPaperFolderColor}
+                resetFolderColor={resetSoftPaperFolderColor}
+                resetAllFolderColors={resetAllSoftPaperFolderColors}
+              />
+              <SoftPaperFolderColorsExpandable
+                label="Customize sidebar folder colors (Dark)"
+                mode="dark"
+                folderColors={softPaperFolderColorsDark}
+                setFolderColor={setSoftPaperFolderColor}
+                resetFolderColor={resetSoftPaperFolderColor}
+                resetAllFolderColors={resetAllSoftPaperFolderColors}
+              />
+            </div>
+          ) : (
+            <SoftPaperFolderColorsExpandable
+              label="Customize sidebar folder colors"
+              mode={resolvedTheme}
+              folderColors={
+                resolvedTheme === "dark"
+                  ? softPaperFolderColorsDark
+                  : softPaperFolderColorsLight
+              }
+              setFolderColor={setSoftPaperFolderColor}
+              resetFolderColor={resetSoftPaperFolderColor}
+              resetAllFolderColors={resetAllSoftPaperFolderColors}
+              className="mt-4"
+            />
+          )
+        ) : theme === "system" ? (
           <div className="mt-4 space-y-2">
             <ColorsExpandable
               label="Customize light colors"
@@ -210,9 +290,22 @@ export function AppearanceSettingsSection() {
           </div>
 
           {/* Base Font Size */}
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <label className="text-sm text-text font-medium">Size</label>
-            <div className="relative w-40">
+            <div className="relative w-40 flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() =>
+                  setEditorFontSetting(
+                    "baseFontSize",
+                    Math.max(12, editorFontSettings.baseFontSize - 1),
+                  )
+                }
+                className="w-9 h-9 flex items-center justify-center rounded border border-border bg-bg text-text hover:bg-bg-emphasis active:scale-95 touch-manipulation text-base font-semibold shrink-0 cursor-pointer select-none"
+                aria-label="Decrease font size"
+              >
+                −
+              </button>
               <Input
                 type="number"
                 min="12"
@@ -223,6 +316,19 @@ export function AppearanceSettingsSection() {
                 }
                 className="w-full h-9 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
+              <button
+                type="button"
+                onClick={() =>
+                  setEditorFontSetting(
+                    "baseFontSize",
+                    Math.min(24, editorFontSettings.baseFontSize + 1),
+                  )
+                }
+                className="w-9 h-9 flex items-center justify-center rounded border border-border bg-bg text-text hover:bg-bg-emphasis active:scale-95 touch-manipulation text-base font-semibold shrink-0 cursor-pointer select-none"
+                aria-label="Increase font size"
+              >
+                +
+              </button>
             </div>
           </div>
 
@@ -536,6 +642,74 @@ function ColorsExpandable({
             );
           });
         })()}
+      </div>
+    </details>
+  );
+}
+
+// Expandable subsection for customizing Obsidian Soft Paper sidebar folder colors
+function SoftPaperFolderColorsExpandable({
+  label,
+  mode,
+  folderColors,
+  setFolderColor,
+  resetFolderColor,
+  resetAllFolderColors,
+  className,
+}: {
+  label: string;
+  mode: "light" | "dark";
+  folderColors: Partial<Record<SoftPaperFolderColorKey, string>>;
+  setFolderColor: (
+    mode: "light" | "dark",
+    key: SoftPaperFolderColorKey,
+    value: string,
+  ) => void;
+  resetFolderColor: (
+    mode: "light" | "dark",
+    key: SoftPaperFolderColorKey,
+  ) => void;
+  resetAllFolderColors: (mode: "light" | "dark") => void;
+  className?: string;
+}) {
+  const defaults = defaultSoftPaperFolderColors[mode];
+  const hasAnyCustom = Object.keys(folderColors).length > 0;
+
+  return (
+    <details className={cn("text-sm", className)} open>
+      <summary className="cursor-pointer text-text-muted hover:text-text select-none flex items-center gap-1 font-medium">
+        <ChevronRightIcon className="w-3.5 h-3.5 stroke-2 transition-transform [[open]>&]:rotate-90" />
+        {label}
+        {hasAnyCustom && (
+          <Button
+            onClick={(e) => {
+              e.preventDefault();
+              resetAllFolderColors(mode);
+            }}
+            variant="ghost"
+            size="sm"
+            className="ml-auto"
+          >
+            Reset all
+          </Button>
+        )}
+      </summary>
+      <div className="mt-2 rounded-[10px] border border-border pl-4 py-3 pr-3 space-y-2">
+        <div className="text-xs text-text-muted mb-2">
+          Customize sidebar folder pill colors for Obsidian Soft Paper ({mode}{" "}
+          mode).
+        </div>
+        {softPaperFolderColorLabels.map(({ key, label: itemLabel }) => (
+          <div key={key} className="flex items-center justify-between">
+            <label className="text-sm text-text font-medium">{itemLabel}</label>
+            <ColorPicker
+              color={folderColors[key] ?? defaults[key]}
+              defaultColor={defaults[key]}
+              onChange={(value) => setFolderColor(mode, key, value)}
+              onReset={() => resetFolderColor(mode, key)}
+            />
+          </div>
+        ))}
       </div>
     </details>
   );

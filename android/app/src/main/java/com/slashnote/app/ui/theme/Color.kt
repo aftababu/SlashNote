@@ -52,3 +52,26 @@ val StitchCodeHighlight = DarkCodeHighlight
 val StitchCodeBg = DarkCodeBg
 val DarkAccent = DarkSurfaceElevated
 val LightAccent = LightTextPrimary
+
+// Obsidian Soft Paper — Light Mode Palette
+val SoftPaperLightBackground = Color(0xFFF2ECE4)
+val SoftPaperLightSurface = Color(0xFFEAE2D8)
+val SoftPaperLightSurfaceElevated = Color(0xFFF7F3ED)
+val SoftPaperLightBorder = Color(0xFFD8CFC3)
+val SoftPaperLightTextPrimary = Color(0xFF464255)
+val SoftPaperLightTextSecondary = Color(0xFF7A7485)
+val SoftPaperLightAccent = Color(0xFF54507A)
+val SoftPaperLightCodeBg = Color(0xFFDFD6CB)
+val SoftPaperLightCodeBorder = Color(0xFFD0C5B8)
+
+// Obsidian Soft Paper — Dark Mode Palette
+val SoftPaperDarkBackground = Color(0xFF242730)
+val SoftPaperDarkSurface = Color(0xFF1E2028)
+val SoftPaperDarkSurfaceElevated = Color(0xFF2C303B)
+val SoftPaperDarkBorder = Color(0xFF343844)
+val SoftPaperDarkTextPrimary = Color(0xFFCFD4E0)
+val SoftPaperDarkTextSecondary = Color(0xFF8B91A1)
+val SoftPaperDarkAccent = Color(0xFF76B5BD)
+val SoftPaperDarkCodeBg = Color(0xFF1B1D24)
+val SoftPaperDarkCodeBorder = Color(0xFF2C303B)
+

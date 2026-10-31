@@ -1180,7 +1180,7 @@ export function Editor({
     editorProps: {
       attributes: {
         class:
-          "prose prose-lg dark:prose-invert max-w-3xl mx-auto focus:outline-none min-h-full px-6 pt-8 pb-24",
+          "prose prose-lg dark:prose-invert max-w-3xl mx-auto focus:outline-none min-h-full px-12 pt-8 pb-24",
       },
       // Serialize copied text as markdown instead of plain text
       clipboardTextSerializer: (slice) => {
@@ -1216,48 +1216,58 @@ export function Editor({
         const clipboardData = event.clipboardData;
         if (!clipboardData) return false;
 
-        // Check for images first
-        const items = Array.from(clipboardData.items);
+        // Check for images across both clipboardData.items and clipboardData.files
+        const items = Array.from(clipboardData.items || []);
+        const files = Array.from(clipboardData.files || []);
+
         const imageItem = items.find((item) => item.type.startsWith("image/"));
-
-        if (imageItem) {
-          const blob = imageItem.getAsFile();
-          if (blob) {
-            // Send raw bytes over IPC (avoids a full base64 string in memory).
-            blob
-              .arrayBuffer()
-              .then((buf) => Array.from(new Uint8Array(buf)))
-              .then(async (bytes) => {
-                try {
-                  const relativePath = await invoke<string>(
-                    "save_clipboard_image",
-                    { imageBytes: bytes },
-                  );
-
-                  // Get notes folder and construct absolute path using Tauri's join
-                  const notesFolder = await invoke<string>("get_notes_folder");
-                  const absolutePath = await join(notesFolder, relativePath);
-
-                  // Convert to Tauri asset URL
-                  const assetUrl = convertFileSrc(absolutePath);
-
-                  // Insert image
-                  editorRef.current
-                    ?.chain()
-                    .focus()
-                    .setImage({ src: assetUrl })
-                    .run();
-                } catch (error) {
-                  console.error("Failed to paste image:", error);
-                  toast.error("Failed to paste image");
-                }
-              })
-              .catch((error) => {
-                console.error("Failed to read clipboard image:", error);
-                toast.error("Failed to read clipboard image");
-              });
-            return true; // Handled
+        let blob: Blob | null = imageItem ? imageItem.getAsFile() : null;
+        if (!blob) {
+          const imageFile = files.find((f) => f.type.startsWith("image/"));
+          if (imageFile) {
+            blob = imageFile;
           }
+        }
+
+        if (blob && blob.size > 0 && blob.type.startsWith("image/")) {
+          const targetPos = _view.state.selection.from;
+          blob
+            .arrayBuffer()
+            .then((buf) => Array.from(new Uint8Array(buf)))
+            .then(async (bytes) => {
+              try {
+                const relativePath = await invoke<string>(
+                  "save_clipboard_image",
+                  { imageBytes: bytes, noteId: currentNote?.id },
+                );
+
+                // Get notes folder and construct absolute path to the saved asset file
+                const filename = relativePath.split(/[\\/]/).pop() || "";
+                const notesFolder = await invoke<string>("get_notes_folder");
+                const absolutePath = await join(notesFolder, "assets", filename);
+
+                // Convert to Tauri asset URL
+                const assetUrl = convertFileSrc(absolutePath);
+
+                // Insert image at selection position
+                editorRef.current
+                  ?.chain()
+                  .focus()
+                  .insertContentAt(targetPos, {
+                    type: "image",
+                    attrs: { src: assetUrl },
+                  })
+                  .run();
+              } catch (tauriError) {
+                console.error("Failed to save clipboard image:", tauriError);
+                toast.error(`Failed to save image: ${tauriError}`);
+              }
+            })
+            .catch((error) => {
+              console.error("Failed to read clipboard image:", error);
+              toast.error("Failed to read clipboard image");
+            });
+          return true; // Handled
         }
 
         // Handle markdown text paste
@@ -1459,6 +1469,10 @@ export function Editor({
   useEffect(() => {
     // Skip if no note or editor
     if (!currentNote || !editor) {
+      if (!currentNote) {
+        loadedNoteIdRef.current = null;
+        loadedModifiedRef.current = null;
+      }
       return;
     }
 
@@ -1491,6 +1505,7 @@ export function Editor({
     // Reset source mode when genuinely switching notes (renames return early above)
     if (!isSameNote) {
       setSourceMode(false);
+      setSourceContent(currentNote.content);
       if (sourceTimeoutRef.current) {
         clearTimeout(sourceTimeoutRef.current);
         sourceTimeoutRef.current = null;
@@ -1498,12 +1513,15 @@ export function Editor({
     }
     // Check if this is a manual reload (user clicked Refresh button or pressed Cmd+R)
     const isManualReload = reloadVersion !== lastReloadVersionRef.current;
+    const editorUnexpectedlyEmpty =
+      editor.isEmpty && currentNote.content.trim() !== "" && !needsSaveRef.current;
 
-    if (isSameNote) {
+    if (isSameNote && !editorUnexpectedlyEmpty) {
       if (isManualReload) {
         // Manual reload - update the editor content
         lastReloadVersionRef.current = reloadVersion;
         loadedModifiedRef.current = currentNote.modified;
+        setSourceContent(currentNote.content);
         isLoadingRef.current = true;
         const manager = editor.storage.markdown?.manager;
         if (manager) {
@@ -1765,14 +1783,16 @@ export function Editor({
     });
     if (selected) {
       try {
-        // Copy image to assets folder and get relative path (assets/filename.ext)
+        // Copy image to assets folder and get relative path
         const relativePath = await invoke<string>("copy_image_to_assets", {
           sourcePath: selected as string,
+          noteId: currentNote?.id,
         });
 
         // Get notes folder and construct absolute path using Tauri's join
+        const filename = relativePath.split(/[\\/]/).pop() || "";
         const notesFolder = await invoke<string>("get_notes_folder");
-        const absolutePath = await join(notesFolder, relativePath);
+        const absolutePath = await join(notesFolder, "assets", filename);
 
         // Convert to Tauri asset URL
         const assetUrl = convertFileSrc(absolutePath);
@@ -1781,6 +1801,7 @@ export function Editor({
         editor.chain().focus().setImage({ src: assetUrl }).run();
       } catch (error) {
         console.error("Failed to add image:", error);
+        toast.error(`Failed to add image: ${error}`);
       }
     }
   }, [editor]);
@@ -2482,7 +2503,7 @@ export function Editor({
                 onChange={(e) => handleSourceChange(e.target.value)}
                 wrap="off"
                 dir={textDirection}
-                className="w-full h-full bg-transparent text-text focus:outline-none resize-none px-6 pt-8 pb-24 mx-auto block"
+                className="w-full h-full bg-transparent text-text focus:outline-none resize-none px-12 pt-8 pb-24 mx-auto block"
                 style={{
                   maxWidth: "var(--editor-max-width, 48rem)",
                   fontFamily:

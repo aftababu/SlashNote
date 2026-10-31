@@ -30,6 +30,7 @@ import com.slashnote.app.security.AppSettings
 import com.slashnote.app.security.SecureStorage
 import com.slashnote.app.utils.StorageUtils
 import com.slashnote.app.sync.GitSyncWorker
+import com.slashnote.app.sync.GitignoreManager
 import com.slashnote.app.ui.components.BottomNavBar
 import com.slashnote.app.ui.components.StitchBottomTab
 import com.slashnote.app.ui.theme.*
@@ -47,6 +48,14 @@ fun SettingsScreen(
     notesDir: String,
     isDarkTheme: Boolean,
     onToggleTheme: () -> Unit,
+    appTheme: AppTheme = AppTheme.SLASHNOTE,
+    onSelectAppTheme: (AppTheme) -> Unit = {},
+    softPaperFolderColors: Map<String, String> = emptyMap(),
+    onSetSoftPaperFolderColor: (key: String, hexColor: String) -> Unit = { _, _ -> },
+    onResetSoftPaperFolderColor: (key: String) -> Unit = {},
+    onResetAllSoftPaperFolderColors: () -> Unit = {},
+    fontSizeSp: Int = 16,
+    onFontSizeChange: (Int) -> Unit = {},
     onBack: () -> Unit,
     onPickCustomVaultPath: () -> Unit
 ) {
@@ -63,7 +72,7 @@ fun SettingsScreen(
     var showAllFiles by remember { mutableStateOf(AppSettings.getShowAllFiles(context)) }
     var template by remember { mutableStateOf(AppSettings.getNoteTemplate(context)) }
     var ignored by remember { mutableStateOf(AppSettings.getIgnoredPatterns(context)) }
-    var fontSizeSp by remember { mutableStateOf(AppSettings.getFontSizeSp(context)) }
+    var currentFontSizeSp by remember(fontSizeSp) { mutableStateOf(fontSizeSp) }
     var isRtl by remember { mutableStateOf(AppSettings.getIsRtl(context)) }
     var autoSaveEnabled by remember { mutableStateOf(true) }
     var liveParseEnabled by remember { mutableStateOf(true) }
@@ -213,9 +222,16 @@ fun SettingsScreen(
                     2 -> AppearanceTab(
                         isDarkTheme = isDarkTheme,
                         onToggleTheme = onToggleTheme,
-                        fontSizeSp = fontSizeSp,
+                        appTheme = appTheme,
+                        onSelectAppTheme = onSelectAppTheme,
+                        softPaperFolderColors = softPaperFolderColors,
+                        onSetSoftPaperFolderColor = onSetSoftPaperFolderColor,
+                        onResetSoftPaperFolderColor = onResetSoftPaperFolderColor,
+                        onResetAllSoftPaperFolderColors = onResetAllSoftPaperFolderColors,
+                        fontSizeSp = currentFontSizeSp,
                         onFontSizeChange = {
-                            fontSizeSp = it
+                            currentFontSizeSp = it
+                            onFontSizeChange(it)
                             AppSettings.saveFontSizeSp(context, it)
                         },
                         isRtl = isRtl,
@@ -635,6 +651,225 @@ private fun GitSyncTab(
                 }
             }
         }
+
+        IgnoredFileTypesCard(notesDir = notesDir)
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun IgnoredFileTypesCard(notesDir: String) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val defaults = remember { GitignoreManager.getDefaultExtensions() }
+
+    var savedTypes by remember {
+        mutableStateOf(AppSettings.getIgnoredFileTypes(context))
+    }
+    val currentTypes = savedTypes ?: defaults
+
+    var inputVal by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
+
+    fun save(updated: List<String>?) {
+        isSaving = true
+        AppSettings.saveIgnoredFileTypes(context, updated)
+        savedTypes = updated
+        val effective = updated ?: defaults
+        scope.launch(Dispatchers.IO) {
+            GitignoreManager.syncGitignore(notesDir, effective)
+            isSaving = false
+        }
+    }
+
+    fun handleAdd() {
+        errorMessage = null
+        val trimmed = inputVal.trim()
+        if (trimmed.isEmpty()) return
+        val parseRes = GitignoreManager.parseAndNormalizeList(trimmed)
+        parseRes.fold(
+            onSuccess = { newItems ->
+                val filtered = newItems.filter { !currentTypes.contains(it) }
+                if (filtered.isEmpty()) {
+                    errorMessage = "File types already in ignore list"
+                    return
+                }
+                inputVal = ""
+                save(currentTypes + filtered)
+            },
+            onFailure = { err ->
+                errorMessage = err.message ?: "Invalid file extension format"
+            }
+        )
+    }
+
+    fun handleRemove(ext: String) {
+        save(currentTypes.filter { it != ext })
+    }
+
+    fun handleReset() {
+        errorMessage = null
+        save(null)
+    }
+
+    val customTypes = currentTypes.filter { !defaults.contains(it) }
+    val defaultTypes = currentTypes.filter { defaults.contains(it) }
+    val isDefault = savedTypes == null || (currentTypes.size == defaults.size && currentTypes.containsAll(defaults))
+
+    Text(
+        "Ignore file types",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurface
+    )
+
+    StitchCardContainer {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                "Non-note file extensions excluded from version control (.gitignore) and sync.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Input Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = inputVal,
+                    onValueChange = {
+                        inputVal = it
+                        errorMessage = null
+                    },
+                    placeholder = { Text(".mp4, .mp3, .pdf, .docx", fontSize = 13.sp) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                )
+
+                Button(
+                    onClick = { handleAdd() },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    enabled = inputVal.isNotBlank() && !isSaving
+                ) {
+                    Text("Add")
+                }
+            }
+
+            if (errorMessage != null) {
+                Text(
+                    text = errorMessage!!,
+                    fontSize = 12.sp,
+                    color = Color(0xFFEF4444)
+                )
+            }
+
+            // Custom Rules
+            if (customTypes.isNotEmpty()) {
+                Text(
+                    "Custom rules (${customTypes.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = StitchAccentCoral
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    customTypes.forEach { ext ->
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = StitchAccentCoral.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, StitchAccentCoral.copy(alpha = 0.3f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    ext,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Remove $ext",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clickable { handleRemove(ext) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Default Rules
+            Text(
+                "Default rules (${defaultTypes.size})",
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                defaultTypes.forEach { ext ->
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.background,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                ext,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Remove $ext",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clickable { handleRemove(ext) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Reset to defaults
+            if (!isDefault) {
+                Text(
+                    text = "Reset to defaults",
+                    color = StitchAccentCoral,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clickable { handleReset() }
+                        .padding(vertical = 4.dp)
+                )
+            }
+        }
     }
 }
 
@@ -645,15 +880,32 @@ private sealed class ConnectionState {
     data class Error(val message: String) : ConnectionState()
 }
 
+private val SoftPaperFolderPaletteSwatches = listOf(
+    "#BF7B87", "#CF7878", "#9D8AB5", "#A888C2",
+    "#CF9855", "#B8B040", "#72A3A8", "#1FA3AC",
+    "#6B9E78", "#7E93B8", "#C4836A", "#918E8A",
+    "#DAD7D2", "#5C6274"
+)
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AppearanceTab(
     isDarkTheme: Boolean,
     onToggleTheme: () -> Unit,
+    appTheme: AppTheme,
+    onSelectAppTheme: (AppTheme) -> Unit,
+    softPaperFolderColors: Map<String, String>,
+    onSetSoftPaperFolderColor: (key: String, hexColor: String) -> Unit,
+    onResetSoftPaperFolderColor: (key: String) -> Unit,
+    onResetAllSoftPaperFolderColors: () -> Unit,
     fontSizeSp: Int,
     onFontSizeChange: (Int) -> Unit,
     isRtl: Boolean,
     onToggleRtl: () -> Unit
 ) {
+    var editingFolderSpec by remember { mutableStateOf<SoftPaperFolderColorSpec?>(null) }
+    var hexInputText by remember { mutableStateOf("") }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -663,6 +915,48 @@ private fun AppearanceTab(
         Text("Appearance & Theme", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
 
         StitchCardContainer {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Theme", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Choose the color theme and typography style",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AppTheme.entries.forEach { option ->
+                        val isSelected = appTheme == option
+                        OutlinedButton(
+                            onClick = { onSelectAppTheme(option) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(
+                                width = if (isSelected) 1.5.dp else 1.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                            ),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background,
+                                contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                            ),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = option.displayName,
+                                fontSize = 13.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -672,7 +966,11 @@ private fun AppearanceTab(
             ) {
                 Column {
                     Text("Dark Theme Mode", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-                    Text("Warm charcoal dark visual palette", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (appTheme == AppTheme.OBSIDIAN_SOFT_PAPER) "Deep charcoal/navy Soft Paper palette" else "Warm charcoal dark visual palette",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 Switch(
                     checked = isDarkTheme,
@@ -686,20 +984,145 @@ private fun AppearanceTab(
                 )
             }
 
+            if (appTheme == AppTheme.OBSIDIAN_SOFT_PAPER) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Sidebar Folder Colors",
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                "Customize folder pills in ${if (isDarkTheme) "Dark" else "Light"} mode",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (softPaperFolderColors.isNotEmpty()) {
+                            TextButton(onClick = onResetAllSoftPaperFolderColors) {
+                                Text(
+                                    "Reset all",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
+                    SoftPaperFolderColorSpecs.forEach { spec ->
+                        val defaultHex = if (isDarkTheme) spec.defaultDarkHex else spec.defaultLightHex
+                        val activeHex = softPaperFolderColors[spec.key] ?: defaultHex
+                        val defaultColor = parseHexColorOrDefault(defaultHex, MaterialTheme.colorScheme.primary)
+                        val activeColor = parseHexColorOrDefault(activeHex, defaultColor)
+                        val pillTextColor = readableTextForBackground(activeColor, Color.White)
+                        val isCustomized = softPaperFolderColors.containsKey(spec.key)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = spec.label,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (isCustomized) {
+                                    Text(
+                                        text = "Reset",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .clickable { onResetSoftPaperFolderColor(spec.key) }
+                                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                                    )
+                                }
+                                Surface(
+                                    modifier = Modifier
+                                        .clickable {
+                                            editingFolderSpec = spec
+                                            hexInputText = activeHex
+                                        },
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = activeColor,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                                ) {
+                                    Text(
+                                        text = activeHex.uppercase(),
+                                        color = pillTextColor,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("Editor Font Size: ${fontSizeSp}sp", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-                Slider(
-                    value = fontSizeSp.toFloat(),
-                    onValueChange = { onFontSizeChange(it.toInt()) },
-                    valueRange = 12f..24f,
-                    steps = 12,
-                    colors = SliderDefaults.colors(
-                        thumbColor = MaterialTheme.colorScheme.primary,
-                        activeTrackColor = MaterialTheme.colorScheme.primary
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Editor Font Size", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                    Text("${fontSizeSp} sp", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(
+                        onClick = { if (fontSizeSp > 12) onFontSizeChange(fontSizeSp - 1) },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Text("A-", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    Slider(
+                        value = fontSizeSp.toFloat(),
+                        onValueChange = { onFontSizeChange(it.toInt()) },
+                        valueRange = 12f..24f,
+                        steps = 11,
+                        modifier = Modifier.weight(1f),
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary
+                        )
                     )
-                )
+                    IconButton(
+                        onClick = { if (fontSizeSp < 24) onFontSizeChange(fontSizeSp + 1) },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Text("A+", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                }
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
@@ -727,6 +1150,91 @@ private fun AppearanceTab(
                 )
             }
         }
+    }
+
+    if (editingFolderSpec != null) {
+        val spec = editingFolderSpec!!
+        val defaultHex = if (isDarkTheme) spec.defaultDarkHex else spec.defaultLightHex
+        AlertDialog(
+            onDismissRequest = { editingFolderSpec = null },
+            title = {
+                Text(
+                    text = spec.label,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Choose a preset or enter a custom 6-digit hex color:",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SoftPaperFolderPaletteSwatches.forEach { swatchHex ->
+                            val swatchColor = parseHexColorOrDefault(swatchHex, MaterialTheme.colorScheme.primary)
+                            val isSelected = hexInputText.equals(swatchHex, ignoreCase = true)
+                            Surface(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clickable {
+                                        hexInputText = swatchHex
+                                        onSetSoftPaperFolderColor(spec.key, swatchHex)
+                                    },
+                                shape = RoundedCornerShape(8.dp),
+                                color = swatchColor,
+                                border = BorderStroke(
+                                    width = if (isSelected) 2.5.dp else 1.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline
+                                )
+                            ) {}
+                        }
+                    }
+                    OutlinedTextField(
+                        value = hexInputText,
+                        onValueChange = { next ->
+                            hexInputText = next
+                            val clean = next.trim().removePrefix("#")
+                            if (clean.length == 6 && clean.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) {
+                                onSetSoftPaperFolderColor(spec.key, "#${clean.uppercase()}")
+                            }
+                        },
+                        label = { Text("Hex Color (#RRGGBB)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val clean = hexInputText.trim().removePrefix("#")
+                        if (clean.length == 6 && clean.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) {
+                            onSetSoftPaperFolderColor(spec.key, "#${clean.uppercase()}")
+                        }
+                        editingFolderSpec = null
+                    }
+                ) {
+                    Text("Done", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        onResetSoftPaperFolderColor(spec.key)
+                        hexInputText = defaultHex
+                        editingFolderSpec = null
+                    }
+                ) {
+                    Text("Reset Default")
+                }
+            }
+        )
     }
 }
 

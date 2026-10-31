@@ -84,6 +84,7 @@ fun MarkdownEditor(
     visualTransformation: VisualTransformation = VisualTransformation.None,
     focusRequester: FocusRequester = remember { FocusRequester() },
     placeholderText: String = "Start typing note content...",
+    fontSizeSp: Int = 16,
     onTextLayout: ((TextLayoutResult) -> Unit)? = null
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -210,7 +211,7 @@ fun MarkdownEditor(
     // Recompute handle centers in viewport coordinates whenever selection,
     // layout, or scroll position changes.
     val density = LocalDensity.current
-    val horizontalPadPx = with(density) { 6.dp.toPx() }
+    val horizontalPadPx = with(density) { 12.dp.toPx() }
     val verticalPadPx = with(density) { 4.dp.toPx() }
     handleGeometries = remember(value.selection, internalTextLayoutResult, scrollState.value) {
         val layout = internalTextLayoutResult
@@ -312,9 +313,9 @@ fun MarkdownEditor(
                     readOnly = false,
                     textStyle = TextStyle(
                         color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 15.sp,
+                        fontSize = fontSizeSp.sp,
                         fontFamily = FontFamily.Default,
-                        lineHeight = 22.sp
+                        lineHeight = (fontSizeSp * 1.45f).sp
                     ),
                     cursorBrush = SolidColor(cursorHandleColor),
                     visualTransformation = visualTransformation,
@@ -330,10 +331,10 @@ fun MarkdownEditor(
                             if (value.text.isEmpty()) {
                                 Text(
                                     text = placeholderText,
-                                    color = StitchTextMuted,
-                                    fontSize = 15.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                    fontSize = fontSizeSp.sp,
                                     fontFamily = FontFamily.Default,
-                                    lineHeight = 22.sp
+                                    lineHeight = (fontSizeSp * 1.45f).sp
                                 )
                             }
                             innerTextField()

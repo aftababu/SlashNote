@@ -200,6 +200,7 @@ pub fn git_init(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to run git init: {}", e))?;
 
     if output.status.success() {
+        let _ = crate::gitignore::sync_gitignore_file(path, &crate::gitignore::get_default_extensions());
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
@@ -229,6 +230,11 @@ pub fn git_init_native(path: &Path) -> Result<(), String> {
 
     if let Ok(mut config) = repo.config() {
         let _ = config.set_bool("core.filemode", false);
+    }
+
+    let gitignore_path = path.join(".gitignore");
+    if !gitignore_path.exists() {
+        let _ = crate::gitignore::sync_gitignore_file(path, &crate::gitignore::get_default_extensions());
     }
     Ok(())
 }
@@ -707,6 +713,11 @@ pub fn perform_sync(repo_path: &str, token: &str, remote_url: &str, branch: &str
 
     if let Ok(mut config) = repo.config() {
         let _ = config.set_bool("core.filemode", false);
+    }
+
+    let gitignore_path = path.join(".gitignore");
+    if !gitignore_path.exists() {
+        let _ = crate::gitignore::sync_gitignore_file(path, &crate::gitignore::get_default_extensions());
     }
 
     // Auto-commit any uncommitted local changes

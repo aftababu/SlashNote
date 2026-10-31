@@ -13,8 +13,11 @@ export interface Note {
   modified: number;
 }
 
+export type AppThemeName = "slashnote" | "obsidian-soft-paper";
+
 export interface ThemeSettings {
   mode: "light" | "dark" | "system";
+  name?: AppThemeName;
 }
 
 export type FontFamily = "system-sans" | "serif" | "monospace";
@@ -43,6 +46,19 @@ export type ThemeColorKey =
 // Partial map of color overrides (hex strings)
 export type CustomColors = Partial<Record<ThemeColorKey, string>>;
 
+// Customizable sidebar folder color keys for Obsidian Soft Paper theme
+export type SoftPaperFolderColorKey =
+  | "folder-1"
+  | "folder-2"
+  | "folder-3"
+  | "folder-expanded"
+  | "folder-default"
+  | "root-note";
+
+export type SoftPaperFolderColors = Partial<
+  Record<SoftPaperFolderColorKey, string>
+>;
+
 // Per-folder settings (stored in .slashnote/settings.json)
 export interface Settings {
   theme: ThemeSettings;
@@ -57,8 +73,12 @@ export interface Settings {
   interfaceZoom?: number;
   ollamaModel?: string;
   ignoredPatterns?: string[];
+  ignoredFileTypes?: string[];
   customColorsLight?: CustomColors;
   customColorsDark?: CustomColors;
+  softPaperFolderColorsLight?: SoftPaperFolderColors;
+  softPaperFolderColorsDark?: SoftPaperFolderColors;
+  folderCategories?: Record<string, number>;
 }
 
 export interface FolderNode {

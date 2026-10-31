@@ -47,7 +47,7 @@ export function ToolbarButton({
   const button = (
     <button
       className={cn(
-        "h-7 w-7 flex items-center justify-center text-sm rounded transition-colors shrink-0",
+        "h-8 w-8 sm:h-7 sm:w-7 touch-manipulation flex items-center justify-center text-sm rounded transition-colors shrink-0",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1",
         isActive
           ? "bg-bg-muted text-text"

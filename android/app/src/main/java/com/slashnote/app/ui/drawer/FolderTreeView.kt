@@ -3,6 +3,7 @@ package com.slashnote.app.ui.drawer
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
@@ -30,6 +31,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
+import com.slashnote.app.security.AppSettings
+import com.slashnote.app.ui.theme.LocalExtendedColors
+import com.slashnote.app.ui.theme.readableTextForBackground
 import com.slashnote.app.ui.theme.StitchAccentCoral
 import com.slashnote.app.ui.theme.StitchBackground
 import com.slashnote.app.ui.theme.StitchBorder
@@ -55,6 +60,8 @@ fun FolderTreeView(
     onDeleteClick: (item: FolderItem) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var folderCategories by remember { mutableStateOf(AppSettings.getFolderCategories(context)) }
     var expandedPaths by remember { mutableStateOf(setOf<String>()) }
     var rootItems by remember { mutableStateOf<List<FolderItem>>(emptyList()) }
     var searchResults by remember { mutableStateOf<List<NoteHeader>>(emptyList()) }
@@ -129,16 +136,24 @@ fun FolderTreeView(
 
     // Flatten the visible tree (only expanded folders contribute children).
     val visibleRows = remember(rootItems, childrenCache, expandedPaths) {
-        val rows = mutableListOf<Pair<Int, FolderItem>>()
-        fun walk(items: List<FolderItem>, depth: Int) {
+        val rows = mutableListOf<Triple<Int, FolderItem, Int>>()
+        var rootDirIdx = 0
+        fun walk(items: List<FolderItem>, depth: Int, rootFolderOrdinal: Int) {
             for (item in items) {
-                rows.add(depth to item)
+                val ordinal = if (depth == 0 && item.isDir) {
+                    val c = rootDirIdx
+                    rootDirIdx++
+                    c
+                } else {
+                    rootFolderOrdinal
+                }
+                rows.add(Triple(depth, item, ordinal))
                 if (item.isDir && expandedPaths.contains(item.relativePath)) {
-                    childrenCache[item.relativePath]?.let { walk(it, depth + 1) }
+                    childrenCache[item.relativePath]?.let { walk(it, depth + 1, ordinal) }
                 }
             }
         }
-        walk(rootItems, 0)
+        walk(rootItems, 0, -1)
         rows
     }
 
@@ -288,19 +303,26 @@ fun FolderTreeView(
                 }
             }
         } else {
+            val extColors = LocalExtendedColors.current
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 4.dp)
+                contentPadding = if (extColors.isSoftPaper) PaddingValues(horizontal = 8.dp, vertical = 6.dp) else PaddingValues(vertical = 4.dp),
+                verticalArrangement = if (extColors.isSoftPaper) Arrangement.spacedBy(4.dp) else Arrangement.Top
             ) {
                 items(
                     visibleRows,
                     key = { it.second.relativePath },
                     contentType = { it.second.isDir }
-                ) { (depth, item) ->
+                ) { (depth, item, _) ->
                     TreeItemRow(
                         notesDir = notesDir,
                         item = item,
                         depth = depth,
+                        category = folderCategories[item.relativePath] ?: 0,
+                        onSetCategory = { cat ->
+                            AppSettings.setFolderCategory(context, item.relativePath, cat)
+                            folderCategories = AppSettings.getFolderCategories(context)
+                        },
                         selectedFilename = selectedFilename,
                         isExpanded = expandedPaths.contains(item.relativePath),
                         isHoveredTarget = item.isDir && dropTargetFolder == item.relativePath,
@@ -386,6 +408,8 @@ private fun TreeItemRow(
     notesDir: String,
     item: FolderItem,
     depth: Int,
+    category: Int = 0,
+    onSetCategory: (Int?) -> Unit = {},
     selectedFilename: String?,
     isExpanded: Boolean,
     isHoveredTarget: Boolean,
@@ -401,12 +425,44 @@ private fun TreeItemRow(
     onDragEnd: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    var showColorPicker by remember { mutableStateOf(false) }
     val isSelected = selectedFilename == item.relativePath
+    val extColors = LocalExtendedColors.current
+
+    val rowBgColor = if (extColors.isSoftPaper) {
+        when {
+            depth > 0 && category == 0 -> extColors.folderPillExpanded
+            item.isDir && isExpanded -> extColors.folderPillExpanded
+            item.isDir -> when (category) {
+                1 -> extColors.folderPill1
+                2 -> extColors.folderPill2
+                3 -> extColors.folderPill3
+                else -> extColors.folderPillDefault
+            }
+            else -> extColors.rootNotePillBg
+        }
+    } else {
+        when {
+            isHoveredTarget -> MaterialTheme.colorScheme.surfaceVariant
+            isSelected -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            else -> Color.Transparent
+        }
+    }
+
+    val contentFgColor = if (extColors.isSoftPaper) {
+        if (depth == 0 && !item.isDir) {
+            readableTextForBackground(rowBgColor, extColors.rootNotePillText)
+        } else {
+            readableTextForBackground(rowBgColor, extColors.folderPillText)
+        }
+    } else {
+        if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+    }
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .height(if (extColors.isSoftPaper) 38.dp else 36.dp)
             .pointerInput(item) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = { onDragStart(item) },
@@ -425,13 +481,13 @@ private fun TreeItemRow(
                     onSelectNote(item.relativePath)
                 }
             },
-        color = when {
-            isHoveredTarget -> MaterialTheme.colorScheme.surfaceVariant
-            isSelected -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-            else -> Color.Transparent
+        color = rowBgColor,
+        border = when {
+            isHoveredTarget -> BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            extColors.isSoftPaper && isSelected -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+            else -> null
         },
-        border = if (isHoveredTarget) BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null,
-        shape = RoundedCornerShape(4.dp)
+        shape = RoundedCornerShape(if (extColors.isSoftPaper) 6.dp else 4.dp)
     ) {
         Row(
             modifier = Modifier
@@ -448,7 +504,7 @@ private fun TreeItemRow(
                     Icon(
                         imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (extColors.isSoftPaper) contentFgColor else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
@@ -459,7 +515,7 @@ private fun TreeItemRow(
                 Icon(
                     imageVector = if (item.isDir) Icons.Outlined.Folder else Icons.Outlined.Description,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (extColors.isSoftPaper) contentFgColor else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
                 )
 
@@ -469,7 +525,7 @@ private fun TreeItemRow(
                     text = item.name,
                     fontSize = 13.sp,
                     fontWeight = if (item.isDir) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = contentFgColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -483,7 +539,7 @@ private fun TreeItemRow(
                     Icon(
                         Icons.Default.MoreVert,
                         contentDescription = "Options",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (extColors.isSoftPaper) contentFgColor else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp)
                     )
                 }
@@ -504,6 +560,14 @@ private fun TreeItemRow(
                             onClick = {
                                 showMenu = false
                                 onNavigateDir(item.relativePath)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Folder Color") },
+                            leadingIcon = { Icon(Icons.Default.Palette, contentDescription = "Folder Color") },
+                            onClick = {
+                                showMenu = false
+                                showColorPicker = true
                             }
                         )
                     }
@@ -534,6 +598,89 @@ private fun TreeItemRow(
                 }
             }
         }
+    }
+
+    if (showColorPicker && item.isDir) {
+        val options = listOf(
+            Triple(1, "Rose / Coral", "Category 1"),
+            Triple(2, "Lavender / Purple", "Category 2"),
+            Triple(3, "Amber / Gold", "Category 3"),
+            Triple(0, "Remove Category", "Default Gray")
+        )
+        AlertDialog(
+            onDismissRequest = { showColorPicker = false },
+            title = {
+                Text(
+                    text = "Folder Color",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    options.forEach { (catId, name, sub) ->
+                        val isCurrent = if (catId == 0) category == 0 else category == catId
+                        val dotColor = when (catId) {
+                            1 -> extColors.folderPill1
+                            2 -> extColors.folderPill2
+                            3 -> extColors.folderPill3
+                            else -> extColors.folderPillDefault
+                        }
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSetCategory(if (catId == 0) null else catId)
+                                    showColorPicker = false
+                                },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isCurrent) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .background(dotColor, RoundedCornerShape(4.dp))
+                                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                                    )
+                                    Column {
+                                        Text(name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                                        Text(sub, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                                if (isCurrent) {
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = "Selected",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showColorPicker = false }) {
+                    Text("Close")
+                }
+            }
+        )
     }
 }
 

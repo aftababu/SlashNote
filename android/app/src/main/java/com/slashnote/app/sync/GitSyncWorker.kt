@@ -29,6 +29,11 @@ class GitSyncWorker(
             return@withContext Result.success()
         }
 
+        // Ensure .gitignore is up to date before sync commits changes
+        val effectiveTypes = com.slashnote.app.security.AppSettings.getIgnoredFileTypes(applicationContext)
+            ?: GitignoreManager.getDefaultExtensions()
+        GitignoreManager.syncGitignore(notesDir, effectiveTypes)
+
         return@withContext try {
             val resultMessage = syncGitRepository(
                 repoPath = notesDir,

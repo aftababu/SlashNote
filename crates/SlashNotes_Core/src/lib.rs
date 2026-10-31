@@ -4,6 +4,7 @@ use std::path::Path;
 use pulldown_cmark::{Event, HeadingLevel, OffsetIter, Options, Parser, Tag};
 
 pub mod git;
+pub mod gitignore;
 pub mod vault;
 
 use crate::vault::FolderItem;

@@ -313,12 +313,17 @@ html.dark {
 }
 
 /* Editor font customization - simplified */
+.ProseMirror.prose,
 .prose {
   font-family: var(--editor-font-family);
-  font-size: var(--editor-base-font-size);
+  font-size: var(--editor-base-font-size) !important;
   font-weight: 400;
   line-height: var(--editor-line-height);
   color: var(--color-text);
+}
+
+.ProseMirror.prose :where(p, li, blockquote, td, th) {
+  font-size: var(--editor-base-font-size);
 }
 
 /* Ensure prose text color follows theme in dark mode */
@@ -691,13 +696,26 @@ html.dark {
   padding-inline-start: 0.25em;
 }
 
-/* List markers - use muted stone color */
-.prose :where(ul > li)::marker {
-  color: var(--color-text-muted);
+/* List markers - ensure crisp visibility in light and dark mode, including inside tables */
+.prose :where(ul > li)::marker,
+.prose ul > li::marker,
+table.not-prose ul > li::marker,
+.tableWrapper ul > li::marker,
+td ul > li::marker,
+th ul > li::marker {
+  color: var(--color-text);
+  opacity: 0.8;
 }
 
-.prose :where(ol > li)::marker {
-  color: var(--color-text-muted);
+.prose :where(ol > li)::marker,
+.prose ol > li::marker,
+table.not-prose ol > li::marker,
+.tableWrapper ol > li::marker,
+td ol > li::marker,
+th ol > li::marker {
+  color: var(--color-text);
+  opacity: 0.85;
+  font-weight: 600;
 }
 
 .prose li > p {
@@ -736,6 +754,9 @@ ul[data-type="taskList"] li > label {
   display: flex;
   align-items: center;
   height: 1.6em; /* Match text line height */
+  cursor: pointer;
+  touch-action: manipulation;
+  padding-right: 2px;
 }
 
 ul[data-type="taskList"] li > label input[type="checkbox"] {
@@ -751,6 +772,7 @@ ul[data-type="taskList"] li > label input[type="checkbox"] {
   position: relative;
   flex-shrink: 0;
   transition: background-color 0.15s, border-color 0.15s;
+  touch-action: manipulation;
 }
 
 ul[data-type="taskList"] li > label input[type="checkbox"]:checked {
@@ -806,11 +828,10 @@ ul[data-type="taskList"] ul[data-type="taskList"] {
 /* Table styles */
 .prose table,
 table.not-prose {
-  display: block;
+  display: table;
   width: max-content;
-  max-width: 100%;
-  overflow-x: auto;
-  border: 1px solid color-mix(in srgb, var(--color-text) 15%, transparent);
+  min-width: 100%;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   border-collapse: separate;
   border-spacing: 0;
@@ -818,14 +839,7 @@ table.not-prose {
   margin-bottom: 1em;
   font-size: var(--editor-base-font-size);
   color: var(--color-text);
-  /* Hide scrollbar but keep horizontal scrolling */
-  scrollbar-width: none; /* Firefox */
-  -ms-overflow-style: none; /* IE/Edge */
-}
-
-.prose table::-webkit-scrollbar,
-table.not-prose::-webkit-scrollbar {
-  display: none; /* Chrome/Safari */
+  background-color: var(--color-bg);
 }
 
 .prose table th,
@@ -833,12 +847,14 @@ table.not-prose::-webkit-scrollbar {
 table.not-prose th,
 table.not-prose td {
   border: 0;
-  border-right: 1px solid color-mix(in srgb, var(--color-text) 15%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-text) 15%, transparent);
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
   padding: 0.5em 0.75em;
   text-align: left;
   vertical-align: top;
-  min-width: 120px;
+  min-width: 100px;
+  background-color: var(--color-bg);
+  color: var(--color-text);
 }
 
 /* Avoid double lines with separate border model */
@@ -859,7 +875,31 @@ table.not-prose tr:last-child td {
 .prose table th,
 table.not-prose th {
   font-weight: var(--editor-bold-weight);
-  background-color: var(--color-bg-muted);
+  background-color: var(--color-bg-secondary);
+}
+
+/* Ensure list items inside table cells display proper markers */
+table.not-prose ul,
+.tableWrapper ul,
+.prose table ul {
+  list-style-type: disc;
+  padding-left: 1.25em;
+  margin: 0.25em 0;
+}
+
+table.not-prose ol,
+.tableWrapper ol,
+.prose table ol {
+  list-style-type: decimal;
+  padding-left: 1.25em;
+  margin: 0.25em 0;
+}
+
+table.not-prose li,
+.tableWrapper li,
+.prose table li {
+  margin: 0.125em 0;
+  color: var(--color-text);
 }
 
 /* Remove all margins inside table cells - cell padding handles spacing */
@@ -891,23 +931,27 @@ table.not-prose th > * {
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   border: none;
   border-radius: 0;
-
-  /* Hide scrollbar but keep scrollability */
-  scrollbar-width: none; /* Firefox */
-  -ms-overflow-style: none; /* IE/Edge */
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text) 20%, transparent) transparent;
 }
 
 .tableWrapper::-webkit-scrollbar {
-  display: none; /* Chrome/Safari */
+  height: 6px;
+}
+
+.tableWrapper::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-text) 20%, transparent);
+  border-radius: 3px;
 }
 
 .tableWrapper table {
   margin: 0;
   width: max-content !important;
-  max-width: 100% !important;
-  min-width: 0 !important;
+  min-width: 100% !important;
+  max-width: none !important;
 }
 
 /* stylelint-enable selector-class-pattern */
@@ -1292,4 +1336,252 @@ table.not-prose th {
   100% {
     pointer-events: auto;
   }
+}
+
+/* ==========================================================================
+   Obsidian Soft Paper Theme (Light & Dark Modes)
+   ========================================================================== */
+
+html.theme-obsidian-soft-paper:not(.dark) {
+  --color-bg: #f2ece4;
+  --color-bg-secondary: #eae2d8;
+  --color-bg-elevated: #f7f3ed;
+  --color-bg-muted: #e3dad0;
+  --color-bg-emphasis: #d5c9bc;
+
+  --color-text: #464255;
+  --color-text-muted: #7a7485;
+  --color-text-inverse: #f7f3ed;
+
+  --color-border: #d8cfc3;
+  --color-border-muted: #e2d9cd;
+  --color-accent: #54507a;
+  --color-selection: rgba(84, 80, 122, 0.16);
+  --color-code-bg: #dfd6cb;
+
+  /* Multicolored soft syntax highlighting (Light) */
+  --color-code: #464255;
+  --color-syntax-comment: #625e78;
+  --color-syntax-keyword: #b85478;
+  --color-syntax-string: #528a60;
+  --color-syntax-number: #48788a;
+  --color-syntax-function: #b87d3b;
+  --color-syntax-type: #b87d3b;
+  --color-syntax-variable: #464255;
+  --color-syntax-operator: #8a5668;
+  --color-syntax-attr: #7b6294;
+  --color-syntax-meta: #b85478;
+  --color-syntax-builtin: #b87d3b;
+  --color-syntax-tag: #9c5668;
+  --color-syntax-deleted: #b85478;
+
+  /* Soft Paper semantic heading & accent colors (Light) */
+  --sp-h1: #54507a;
+  --sp-h2: #c9725b;
+  --sp-h3: #9c5668;
+  --sp-h4: #7b6294;
+  --sp-h5: #528085;
+  --sp-h6: #7a7485;
+  --sp-bold: #9c5668;
+  --sp-link: #54507a;
+  --sp-code-border: #d0c5b8;
+
+  /* Soft Paper coordinated folder pills (Light) */
+  --sp-folder-1: #bf7b87;
+  --sp-folder-2: #9d8ab5;
+  --sp-folder-3: #cf9855;
+  --sp-folder-expanded: #72a3a8;
+  --sp-folder-default: #918e8a;
+  --sp-folder-text: #fbf9f6;
+  --sp-root-note-bg: #dad7d2;
+  --sp-root-note-text: #464255;
+}
+
+html.theme-obsidian-soft-paper.dark {
+  --color-bg: #242730;
+  --color-bg-secondary: #1e2028;
+  --color-bg-elevated: #2c303b;
+  --color-bg-muted: #2a2e39;
+  --color-bg-emphasis: #383d4c;
+
+  --color-text: #cfd4e0;
+  --color-text-muted: #8b91a1;
+  --color-text-inverse: #1e2028;
+
+  --color-border: #343844;
+  --color-border-muted: #2c303b;
+  --color-accent: #76b5bd;
+  --color-selection: rgba(118, 181, 189, 0.22);
+  --color-code-bg: #1b1d24;
+
+  /* Multicolored soft syntax highlighting (Dark) */
+  --color-code: #cfd4e0;
+  --color-syntax-comment: #9ba2b2;
+  --color-syntax-keyword: #d97798;
+  --color-syntax-string: #78b886;
+  --color-syntax-number: #76b5bd;
+  --color-syntax-function: #cfbd63;
+  --color-syntax-type: #cfbd63;
+  --color-syntax-variable: #cfd4e0;
+  --color-syntax-operator: #d97798;
+  --color-syntax-attr: #b39ddb;
+  --color-syntax-meta: #d97798;
+  --color-syntax-builtin: #cfbd63;
+  --color-syntax-tag: #cf7682;
+  --color-syntax-deleted: #d97798;
+
+  /* Soft Paper semantic heading & accent colors (Dark) */
+  --sp-h1: #b8c4e0;
+  --sp-h2: #d9936a;
+  --sp-h3: #cf7682;
+  --sp-h4: #b39ddb;
+  --sp-h5: #76b5bd;
+  --sp-h6: #9ba2b2;
+  --sp-bold: #cf7682;
+  --sp-link: #76b5bd;
+  --sp-code-border: #2c303b;
+
+  /* Soft Paper coordinated folder pills (Dark) */
+  --sp-folder-1: #cf7878;
+  --sp-folder-2: #a888c2;
+  --sp-folder-3: #b8b040;
+  --sp-folder-expanded: #1fa3ac;
+  --sp-folder-default: #8c8f94;
+  --sp-folder-text: #1c1e26;
+  --sp-root-note-bg: #5c6274;
+  --sp-root-note-text: #e6eaf2;
+}
+
+/* Obsidian Soft Paper Typography & Prose */
+html.theme-obsidian-soft-paper .prose h1 {
+  color: var(--sp-h1);
+  font-family: Georgia, "Times New Roman", serif;
+  letter-spacing: -0.01em;
+}
+
+html.theme-obsidian-soft-paper .prose h2 {
+  color: var(--sp-h2);
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+html.theme-obsidian-soft-paper .prose h3 {
+  color: var(--sp-h3);
+}
+
+html.theme-obsidian-soft-paper .prose h4 {
+  color: var(--sp-h4);
+}
+
+html.theme-obsidian-soft-paper .prose h5 {
+  color: var(--sp-h5);
+}
+
+html.theme-obsidian-soft-paper .prose h6 {
+  color: var(--sp-h6);
+}
+
+html.theme-obsidian-soft-paper .prose :where(strong, b):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  color: var(--sp-bold);
+}
+
+html.theme-obsidian-soft-paper .prose :where(a):not(:where([class~="not-prose"], [class~="not-prose"] *)),
+html.theme-obsidian-soft-paper .prose span[data-wikilink] {
+  color: var(--sp-link);
+}
+
+html.theme-obsidian-soft-paper .code-block-wrapper pre,
+html.theme-obsidian-soft-paper .prose :where(pre):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  background-color: var(--color-code-bg);
+  border: 1px solid var(--sp-code-border);
+  border-radius: 0.5rem;
+}
+
+/* Coordinated Sidebar Folder Pills in Obsidian Soft Paper */
+html.theme-obsidian-soft-paper [data-folder-tree] {
+  gap: 0.35rem;
+  padding: 0.5rem;
+}
+
+html.theme-obsidian-soft-paper [data-folder-container][data-folder-depth="0"],
+html.theme-obsidian-soft-paper [data-folder-container][data-folder-category] {
+  border-radius: 0.5rem;
+  overflow: hidden;
+  transition: background-color 0.15s ease;
+}
+
+html.theme-obsidian-soft-paper [data-folder-container][data-folder-depth="0"] {
+  background-color: var(--sp-folder-default);
+  --sp-current-folder-text: var(--sp-folder-default-text, var(--sp-folder-text));
+}
+
+html.theme-obsidian-soft-paper [data-folder-container][data-folder-category="1"] {
+  background-color: var(--sp-folder-1);
+  --sp-current-folder-text: var(--sp-folder-1-text, var(--sp-folder-text));
+}
+
+html.theme-obsidian-soft-paper [data-folder-container][data-folder-category="2"] {
+  background-color: var(--sp-folder-2);
+  --sp-current-folder-text: var(--sp-folder-2-text, var(--sp-folder-text));
+}
+
+html.theme-obsidian-soft-paper [data-folder-container][data-folder-category="3"] {
+  background-color: var(--sp-folder-3);
+  --sp-current-folder-text: var(--sp-folder-3-text, var(--sp-folder-text));
+}
+
+html.theme-obsidian-soft-paper [data-folder-container][data-folder-expanded="true"] {
+  background-color: var(--sp-folder-expanded);
+  --sp-current-folder-text: var(--sp-folder-expanded-text, var(--sp-folder-text));
+  padding-bottom: 0.25rem;
+}
+
+html.theme-obsidian-soft-paper [data-folder-container] [data-folder-header] {
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
+  border-radius: 0.5rem;
+}
+
+html.theme-obsidian-soft-paper [data-folder-container] [data-folder-header]:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+html.theme-obsidian-soft-paper [data-folder-container] [data-folder-header] span,
+html.theme-obsidian-soft-paper [data-folder-container] [data-folder-header] svg {
+  color: var(--sp-current-folder-text, var(--sp-folder-text)) !important;
+  opacity: 0.95;
+}
+
+html.theme-obsidian-soft-paper [data-folder-container] [data-file-item] {
+  margin: 0.1rem 0.35rem;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+  border-radius: 0.375rem;
+}
+
+html.theme-obsidian-soft-paper [data-folder-container] [data-file-item] span,
+html.theme-obsidian-soft-paper [data-folder-container] [data-file-item] svg {
+  color: var(--sp-current-folder-text, var(--sp-folder-text)) !important;
+  opacity: 0.92;
+}
+
+html.theme-obsidian-soft-paper [data-folder-container] [data-file-item][data-selected="true"],
+html.theme-obsidian-soft-paper [data-folder-container] [data-file-item]:hover {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
+html.theme-obsidian-soft-paper [data-file-item][data-file-depth="0"] {
+  background-color: var(--sp-root-note-bg);
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
+  border-radius: 0.5rem;
+}
+
+html.theme-obsidian-soft-paper [data-file-item][data-file-depth="0"] span,
+html.theme-obsidian-soft-paper [data-file-item][data-file-depth="0"] svg {
+  color: var(--sp-root-note-text) !important;
+  opacity: 0.92;
+}
+
+html.theme-obsidian-soft-paper [data-file-item][data-file-depth="0"][data-selected="true"] {
+  outline: 1.5px solid var(--color-accent);
 }

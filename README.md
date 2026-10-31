@@ -70,6 +70,24 @@ SlashNote is a distraction-free, local-first Markdown workspace engineered for d
 
 ---
 
+## Privacy
+
+### Zero Telemetry
+
+SlashNote has a strict **zero-telemetry policy**.
+
+It does not collect analytics, usage statistics, crash reports, advertising
+identifiers, behavioral data, note contents, search queries, or editing
+activity.
+
+Your notes remain on your device.
+
+Network communication is limited to application functionality such as
+user-initiated Git synchronization and application updates.
+
+See [PRIVACY.md](./PRIVACY.md) for details.
+
+
 ## 📜 Attribution & License
 
 SlashNote is released under the [MIT License](./LICENSE).

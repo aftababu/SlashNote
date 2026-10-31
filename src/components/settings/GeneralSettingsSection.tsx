@@ -823,6 +823,18 @@ export function GeneralSettingsSection() {
         </p>
         <IgnoredFoldersEditor />
       </section>
+
+      {/* Divider */}
+      <div className="border-t border-border border-dashed" />
+
+      {/* Ignored File Types */}
+      <section className="pb-2">
+        <h2 className="text-xl font-medium mb-0.5">Ignore file types</h2>
+        <p className="text-sm text-text-muted mb-4">
+          Non-note file extensions excluded from version control (.gitignore) and sync
+        </p>
+        <IgnoredFileTypesEditor />
+      </section>
     </div>
   );
 }
@@ -1035,6 +1047,197 @@ function IgnoredFoldersEditor() {
         >
           Reset to defaults
         </button>
+      )}
+    </div>
+  );
+}
+
+function IgnoredFileTypesEditor() {
+  const [fileTypes, setFileTypes] = useState<string[] | null>(null);
+  const [defaults, setDefaults] = useState<string[]>([]);
+  const [inputVal, setInputVal] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const { notesFolder } = useNotes();
+
+  useEffect(() => {
+    setFileTypes(null);
+    Promise.all([
+      invoke<Settings>("get_settings"),
+      invoke<string[]>("get_default_ignored_file_types"),
+    ])
+      .then(([settings, defaultTypes]) => {
+        setDefaults(defaultTypes);
+        setFileTypes(settings.ignoredFileTypes ?? defaultTypes);
+      })
+      .catch((error) => {
+        console.error("Failed to load ignored file types:", error);
+        setFileTypes([]);
+      });
+  }, [notesFolder]);
+
+  const save = async (updated: string[] | null) => {
+    setIsSaving(true);
+    try {
+      await invoke("update_ignored_file_types", { types: updated });
+      setFileTypes(updated ?? defaults);
+      toast.success(
+        updated ? "Ignored file types updated" : "Reset to default ignore rules",
+      );
+    } catch (error) {
+      toast.error(
+        typeof error === "string" ? error : "Failed to save ignored file types",
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleAdd = async () => {
+    const trimmed = inputVal.trim();
+    if (!trimmed || !fileTypes) return;
+
+    try {
+      const parsed = await invoke<string[]>(
+        "parse_and_validate_ignored_file_types",
+        { input: trimmed },
+      );
+      if (parsed.length === 0) return;
+
+      const newEntries = parsed.filter((ext) => !fileTypes.includes(ext));
+      if (newEntries.length === 0) {
+        toast.error("File types already in ignore list");
+        return;
+      }
+
+      setInputVal("");
+      await save([...fileTypes, ...newEntries]);
+    } catch (err) {
+      toast.error(
+        typeof err === "string" ? err : "Invalid file extension format",
+      );
+    }
+  };
+
+  const handleRemove = (ext: string) => {
+    if (!fileTypes) return;
+    save(fileTypes.filter((t) => t !== ext));
+  };
+
+  const handleReset = () => {
+    save(null);
+  };
+
+  if (fileTypes === null) {
+    return <div className="text-sm text-text-muted py-2">Loading...</div>;
+  }
+
+  const customTypes = fileTypes.filter((t) => !defaults.includes(t));
+  const activeDefaultTypes = fileTypes.filter((t) => defaults.includes(t));
+
+  const isDefault =
+    fileTypes.length === defaults.length &&
+    fileTypes.every((t, i) => t === defaults[i]);
+
+  return (
+    <div className="space-y-4">
+      {/* Input */}
+      <div className="flex gap-2">
+        <Input
+          type="text"
+          value={inputVal}
+          onChange={(e) => setInputVal(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAdd();
+            }
+          }}
+          placeholder="e.g. .mp4, .mp3, .pdf, .docx"
+          className="flex-1"
+          disabled={isSaving}
+        />
+        <Button
+          onClick={handleAdd}
+          variant="outline"
+          size="sm"
+          className="h-10"
+          disabled={isSaving || !inputVal.trim()}
+        >
+          Add
+        </Button>
+      </div>
+
+      {/* Custom Rules */}
+      {customTypes.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-xs font-semibold text-text uppercase tracking-wider">
+            Custom rules ({customTypes.length})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {customTypes.map((ext) => (
+              <span
+                key={ext}
+                className="inline-flex items-center gap-1 pl-2 pr-1 py-0.75 rounded-md bg-accent/15 border border-accent/25 text-2xs font-mono font-medium text-text"
+              >
+                {ext}
+                <button
+                  type="button"
+                  aria-label={`Remove ${ext}`}
+                  onClick={() => handleRemove(ext)}
+                  disabled={isSaving}
+                  className="p-0.5 rounded hover:bg-bg-hover text-text-muted hover:text-text cursor-pointer"
+                >
+                  <XIcon className="w-3 h-3 stroke-[1.7]" />
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Default Rules */}
+      <div className="space-y-1.5">
+        <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+          Default rules ({activeDefaultTypes.length})
+        </div>
+        <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-2 rounded-lg border border-border/60 bg-bg-muted/30">
+          {activeDefaultTypes.map((ext) => (
+            <span
+              key={ext}
+              className="inline-flex items-center gap-1 pl-2 pr-1 py-0.75 rounded-md bg-bg-muted text-2xs font-mono text-text-muted"
+            >
+              {ext}
+              <button
+                type="button"
+                aria-label={`Remove ${ext}`}
+                onClick={() => handleRemove(ext)}
+                disabled={isSaving}
+                className="p-0.5 rounded hover:bg-bg-hover text-text-muted hover:text-text cursor-pointer"
+              >
+                <XIcon className="w-3 h-3 stroke-[1.7]" />
+              </button>
+            </span>
+          ))}
+          {activeDefaultTypes.length === 0 && (
+            <span className="text-xs text-text-muted">
+              All default rules removed
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Reset */}
+      {!isDefault && (
+        <div>
+          <button
+            type="button"
+            onClick={handleReset}
+            disabled={isSaving}
+            className="text-sm text-text-muted hover:text-text cursor-pointer font-medium"
+          >
+            Reset to defaults
+          </button>
+        </div>
       )}
     </div>
   );

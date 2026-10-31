@@ -26,7 +26,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.lazy.rememberLazyListState
 import com.slashnote.app.ui.editor.DraggableEditorScrollbar
+import com.slashnote.app.ui.editor.FormattingToolbar
+import com.slashnote.app.ui.editor.isCursorInTaskList
+import com.slashnote.app.ui.editor.toggleTaskListAtCursor
 import com.slashnote.app.ui.editor.MarkdownEditor
+import com.slashnote.app.ui.editor.MdBlock
 import com.slashnote.app.ui.editor.parseMarkdownBlocks
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -67,6 +71,9 @@ import androidx.compose.material.icons.outlined.SnippetFolder
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -105,7 +112,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.slash_notes_core.*
+import android.os.Handler
+import android.os.Looper
 import java.io.File
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Resolve a SAF `content://` tree/document URI into a normalized physical POSIX
@@ -270,6 +283,73 @@ sealed interface VaultState {
     object NoVaultSelected : VaultState
 }
 
+data class NoteNavEntry(
+    val filename: String,
+    val isPreviewMode: Boolean = true,
+    val previewIndex: Int = 0,
+    val previewOffset: Int = 0,
+    val editorScrollY: Int = 0,
+    val editorCursor: Int = 0
+)
+
+val NoteBackStackSaver = listSaver<SnapshotStateList<NoteNavEntry>, Any>(
+    save = { stack ->
+        stack.map { entry ->
+            listOf(
+                entry.filename,
+                if (entry.isPreviewMode) 1 else 0,
+                entry.previewIndex,
+                entry.previewOffset,
+                entry.editorScrollY,
+                entry.editorCursor
+            )
+        }
+    },
+    restore = { savedList ->
+        val stateList = mutableStateListOf<NoteNavEntry>()
+        savedList.forEach { item ->
+            @Suppress("UNCHECKED_CAST")
+            val l = item as List<Any>
+            stateList.add(
+                NoteNavEntry(
+                    filename = l[0] as String,
+                    isPreviewMode = (l[1] as Number).toInt() == 1,
+                    previewIndex = (l[2] as Number).toInt(),
+                    previewOffset = (l[3] as Number).toInt(),
+                    editorScrollY = (l[4] as Number).toInt(),
+                    editorCursor = (l[5] as Number).toInt()
+                )
+            )
+        }
+        stateList
+    }
+)
+
+val NullableNoteNavEntrySaver = listSaver<NoteNavEntry?, Any>(
+    save = { entry ->
+        if (entry == null) emptyList() else listOf(
+            entry.filename,
+            if (entry.isPreviewMode) 1 else 0,
+            entry.previewIndex,
+            entry.previewOffset,
+            entry.editorScrollY,
+            entry.editorCursor
+        )
+    },
+    restore = { list ->
+        if (list.isEmpty()) null else {
+            NoteNavEntry(
+                filename = list[0] as String,
+                isPreviewMode = (list[1] as Number).toInt() == 1,
+                previewIndex = (list[2] as Number).toInt(),
+                previewOffset = (list[3] as Number).toInt(),
+                editorScrollY = (list[4] as Number).toInt(),
+                editorCursor = (list[5] as Number).toInt()
+            )
+        }
+    }
+)
+
 private const val TAG = "SlashNoteVault"
 
 class MainActivity : ComponentActivity() {
@@ -285,24 +365,71 @@ class MainActivity : ComponentActivity() {
         val splashScreen = installSplashScreen()
         splashScreen.setKeepOnScreenCondition { !isVaultReady }
         super.onCreate(savedInstanceState)
-        
+
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
         // Schedule silent background git sync
         GitSyncWorker.schedulePeriodicSync(this)
 
         setContent {
+            val context = LocalContext.current
             val systemDark = isSystemInDarkTheme()
-            var darkTheme by remember { mutableStateOf(systemDark) }
+            var darkTheme by remember { mutableStateOf(AppSettings.getDarkTheme(context, systemDark)) }
+            var appTheme by remember { mutableStateOf(AppTheme.fromId(AppSettings.getThemeName(context))) }
+            var spFolderColorsLight by remember {
+                mutableStateOf(AppSettings.getSoftPaperFolderColors(context, isDark = false))
+            }
+            var spFolderColorsDark by remember {
+                mutableStateOf(AppSettings.getSoftPaperFolderColors(context, isDark = true))
+            }
+            val activeSpFolderColors = if (darkTheme) spFolderColorsDark else spFolderColorsLight
 
-            SlashNoteTheme(darkTheme = darkTheme) {
+            SlashNoteTheme(
+                darkTheme = darkTheme,
+                appTheme = appTheme,
+                softPaperFolderColors = activeSpFolderColors
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
                     SlashNoteApp(
                         isDarkTheme = darkTheme,
-                        onToggleTheme = { darkTheme = !darkTheme },
+                        onToggleTheme = {
+                            val nextDark = !darkTheme
+                            darkTheme = nextDark
+                            AppSettings.saveDarkTheme(context, nextDark)
+                        },
+                        appTheme = appTheme,
+                        onSelectAppTheme = { selectedTheme ->
+                            appTheme = selectedTheme
+                            AppSettings.saveThemeName(context, selectedTheme.id)
+                        },
+                        softPaperFolderColors = activeSpFolderColors,
+                        onSetSoftPaperFolderColor = { key, hexColor ->
+                            AppSettings.saveSoftPaperFolderColor(context, darkTheme, key, hexColor)
+                            if (darkTheme) {
+                                spFolderColorsDark = AppSettings.getSoftPaperFolderColors(context, isDark = true)
+                            } else {
+                                spFolderColorsLight = AppSettings.getSoftPaperFolderColors(context, isDark = false)
+                            }
+                        },
+                        onResetSoftPaperFolderColor = { key ->
+                            AppSettings.resetSoftPaperFolderColor(context, darkTheme, key)
+                            if (darkTheme) {
+                                spFolderColorsDark = AppSettings.getSoftPaperFolderColors(context, isDark = true)
+                            } else {
+                                spFolderColorsLight = AppSettings.getSoftPaperFolderColors(context, isDark = false)
+                            }
+                        },
+                        onResetAllSoftPaperFolderColors = {
+                            AppSettings.resetAllSoftPaperFolderColors(context, darkTheme)
+                            if (darkTheme) {
+                                spFolderColorsDark = emptyMap()
+                            } else {
+                                spFolderColorsLight = emptyMap()
+                            }
+                        },
                         onVaultReady = { isVaultReady = true }
                     )
                 }
@@ -316,6 +443,12 @@ class MainActivity : ComponentActivity() {
 fun SlashNoteApp(
     isDarkTheme: Boolean,
     onToggleTheme: () -> Unit,
+    appTheme: AppTheme = AppTheme.SLASHNOTE,
+    onSelectAppTheme: (AppTheme) -> Unit = {},
+    softPaperFolderColors: Map<String, String> = emptyMap(),
+    onSetSoftPaperFolderColor: (key: String, hexColor: String) -> Unit = { _, _ -> },
+    onResetSoftPaperFolderColor: (key: String) -> Unit = {},
+    onResetAllSoftPaperFolderColors: () -> Unit = {},
     onVaultReady: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -380,8 +513,14 @@ fun SlashNoteApp(
     var allNotesList by remember { mutableStateOf<List<NoteHeader>>(emptyList()) }
     var pinnedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var syncErrorDialogText by remember { mutableStateOf<String?>(null) }
-    val noteBackStack = remember { mutableStateListOf<String>() }
-    var activeHeadingAnchor by remember { mutableStateOf<String?>(null) }
+    val noteBackStack = rememberSaveable(saver = NoteBackStackSaver) {
+        mutableStateListOf<NoteNavEntry>()
+    }
+    var activeRestoreEntry by rememberSaveable(stateSaver = NullableNoteNavEntrySaver) {
+        mutableStateOf<NoteNavEntry?>(null)
+    }
+    var activeHeadingAnchor by rememberSaveable { mutableStateOf<String?>(null) }
+    var editorFontSizeSp by rememberSaveable { mutableIntStateOf(AppSettings.getFontSizeSp(context)) }
     var isRefreshingNotes by remember { mutableStateOf(false) }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -506,6 +645,17 @@ fun SlashNoteApp(
             notesDir = notesDir,
             isDarkTheme = isDarkTheme,
             onToggleTheme = onToggleTheme,
+            appTheme = appTheme,
+            onSelectAppTheme = onSelectAppTheme,
+            softPaperFolderColors = softPaperFolderColors,
+            onSetSoftPaperFolderColor = onSetSoftPaperFolderColor,
+            onResetSoftPaperFolderColor = onResetSoftPaperFolderColor,
+            onResetAllSoftPaperFolderColors = onResetAllSoftPaperFolderColors,
+            fontSizeSp = editorFontSizeSp,
+            onFontSizeChange = { newSize ->
+                editorFontSizeSp = newSize
+                AppSettings.saveFontSizeSp(context, newSize)
+            },
             onBack = { isSettingsOpen = false },
             onPickCustomVaultPath = { safFolderLauncher.launch(null) }
         )
@@ -682,6 +832,7 @@ fun SlashNoteApp(
                                     drawerState.close()
                                     noteBackStack.clear()
                                     activeHeadingAnchor = null
+                                    activeRestoreEntry = null
                                     selectedFilename = relPath
                                 }
                             },
@@ -702,6 +853,10 @@ fun SlashNoteApp(
                                         AppSettings.removeNoteVisitedPath(context, deletedPath)
                                         if (selectedFilename == deletedPath) {
                                             selectedFilename = null
+                                        }
+                                        noteBackStack.removeAll { it.filename == deletedPath }
+                                        if (activeRestoreEntry?.filename == deletedPath) {
+                                            activeRestoreEntry = null
                                         }
                                     }
                                     if (ok) {
@@ -816,6 +971,7 @@ fun SlashNoteApp(
                     onNoteSelected = { relPath ->
                         noteBackStack.clear()
                         activeHeadingAnchor = null
+                        activeRestoreEntry = null
                         selectedFilename = relPath
                     },
                     onOpenDrawer = { scope.launch { drawerState.open() } },
@@ -879,7 +1035,11 @@ fun SlashNoteApp(
                     notesDir = notesDir,
                     filename = selectedFilename!!,
                     headingAnchor = activeHeadingAnchor,
+                    restoreEntry = activeRestoreEntry,
+                    onRestoreConsumed = { activeRestoreEntry = null },
+                    fontSizeSp = editorFontSizeSp,
                     isDarkTheme = isDarkTheme,
+                    appTheme = appTheme,
                     isFocusMode = isFocusMode,
                     isSourceMode = isSourceMode,
                     isPreviewMode = isGlobalPreviewMode,
@@ -890,16 +1050,19 @@ fun SlashNoteApp(
                     onOpenDrawer = { scope.launch { drawerState.open() } },
                     onBack = {
                         if (noteBackStack.isNotEmpty()) {
-                            val prevNote = noteBackStack.removeAt(noteBackStack.size - 1)
+                            val prevEntry = noteBackStack.removeAt(noteBackStack.size - 1)
                             activeHeadingAnchor = null
-                            selectedFilename = prevNote
+                            activeRestoreEntry = prevEntry
+                            isGlobalPreviewMode = prevEntry.isPreviewMode
+                            selectedFilename = prevEntry.filename
                         } else {
                             activeHeadingAnchor = null
+                            activeRestoreEntry = null
                             selectedFilename = null
                             refreshNotesList()
                         }
                     },
-                    onNavigateToWikilink = { rawLink ->
+                    onNavigateToWikilink = { rawLink, currentEntry ->
                         scope.launch {
                             val parts = rawLink.split("#", limit = 2)
                             val rawPath = parts[0].trim()
@@ -919,16 +1082,22 @@ fun SlashNoteApp(
 
                                 if (existingNote != null) {
                                     selectedFilename?.let { current ->
-                                        if (current != existingNote.relativePath) {
-                                            noteBackStack.add(current)
+                                        if (current != existingNote.relativePath || headingTag != null) {
+                                            val entryToPush = currentEntry ?: NoteNavEntry(filename = current, isPreviewMode = isGlobalPreviewMode)
+                                            noteBackStack.add(entryToPush)
                                         }
                                     }
                                     activeHeadingAnchor = headingTag
+                                    activeRestoreEntry = null
                                     selectedFilename = existingNote.relativePath
                                 } else {
                                     Toast.makeText(context, "Note not found: $rawPath", Toast.LENGTH_SHORT).show()
                                 }
                             } else if (headingTag != null) {
+                                selectedFilename?.let { current ->
+                                    val entryToPush = currentEntry ?: NoteNavEntry(filename = current, isPreviewMode = isGlobalPreviewMode)
+                                    noteBackStack.add(entryToPush)
+                                }
                                 activeHeadingAnchor = headingTag
                             }
                         }
@@ -971,7 +1140,7 @@ fun SlashNoteApp(
                             val f = File(fullPath)
                             if (f.exists()) f.readText() else ""
                         } catch (e: Exception) { "" }
-                        
+
                         withContext(Dispatchers.Main) {
                             exportNoteToPdf(context, currentFile, content)
                         }
@@ -1096,9 +1265,18 @@ fun SlashNoteApp(
                     }
 
                     if (success) {
-                        if (!targetItem.isDir) {
+                        if (targetItem.isDir) {
+                            AppSettings.updateFolderCategoryPath(context, oldPath, newPath)
+                        } else {
                             if (selectedFilename == oldPath) {
                                 selectedFilename = newPath
+                            }
+                            val renameIdx = noteBackStack.indexOfFirst { it.filename == oldPath }
+                            if (renameIdx != -1) {
+                                noteBackStack[renameIdx] = noteBackStack[renameIdx].copy(filename = newPath)
+                            }
+                            if (activeRestoreEntry?.filename == oldPath) {
+                                activeRestoreEntry = activeRestoreEntry?.copy(filename = newPath)
                             }
                             AppSettings.updateNoteVisitedPath(context, oldPath, newPath)
                         }
@@ -1610,13 +1788,128 @@ fun NoteCardItem(
 }
 
 
+fun getClipboardImageUri(context: Context): Uri? {
+    return try {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return null
+        val clip = clipboard.primaryClip ?: return null
+        if (clip.itemCount > 0) {
+            val item = clip.getItemAt(0)
+            val uri = item.uri
+            if (uri != null) {
+                val desc = clip.description
+                if (desc != null) {
+                    if (desc.hasMimeType("image/*")) {
+                        return uri
+                    }
+                    for (i in 0 until desc.mimeTypeCount) {
+                        if (desc.getMimeType(i).startsWith("image/")) {
+                            return uri
+                        }
+                    }
+                }
+                val type = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+                if (type != null && type.startsWith("image/")) {
+                    return uri
+                }
+                val path = uri.path?.lowercase() ?: ""
+                if (path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") || path.endsWith(".webp") || path.endsWith(".gif") || path.endsWith(".svg")) {
+                    return uri
+                }
+            }
+        }
+        null
+    } catch (_: Exception) {
+        null
+    }
+}
+
+fun computeRelativeAssetPath(noteFilename: String, assetFilename: String): String {
+    val normalized = noteFilename.replace('\\', '/').trimStart('/')
+    val lastSlash = normalized.lastIndexOf('/')
+    val depth = if (lastSlash == -1) {
+        0
+    } else {
+        val folderPart = normalized.substring(0, lastSlash)
+        folderPart.split('/').count { it.isNotEmpty() && it != "." }
+    }
+    val prefix = if (depth > 0) "../".repeat(depth) else ""
+    return "${prefix}assets/$assetFilename"
+}
+
+fun saveImageToAssets(context: Context, notesDir: String, uri: Uri, noteFilename: String = ""): String? {
+    return try {
+        val rootDir = File(notesDir)
+        if (!rootDir.exists() || !rootDir.isDirectory) {
+            throw IOException("Notes vault directory does not exist: $notesDir")
+        }
+
+        val resolver = context.contentResolver
+        val mimeType = resolver.getType(uri) ?: "image/png"
+        val ext = when {
+            mimeType.contains("jpeg") || mimeType.contains("jpg") -> "jpg"
+            mimeType.contains("png") -> "png"
+            mimeType.contains("webp") -> "webp"
+            mimeType.contains("gif") -> "gif"
+            mimeType.contains("svg") -> "svg"
+            else -> "png"
+        }
+
+        // Auto-create assets directory if it does not exist, or reuse existing
+        val assetsDir = File(rootDir, "assets")
+        if (!assetsDir.exists()) {
+            val created = assetsDir.mkdirs()
+            if (!created && !assetsDir.exists()) {
+                throw IOException("Failed to create assets directory in vault")
+            }
+        }
+
+        // Generate unique filename with timestamp and counter to avoid collisions
+        val timeFormat = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+        val baseTime = timeFormat.format(Date())
+        var targetName = "image-$baseTime.$ext"
+        var destFile = File(assetsDir, targetName)
+        var counter = 1
+        while (destFile.exists()) {
+            targetName = "image-$baseTime-$counter.$ext"
+            destFile = File(assetsDir, targetName)
+            counter++
+        }
+
+        // Write image stream
+        resolver.openInputStream(uri)?.use { input ->
+            destFile.outputStream().use { output ->
+                input.copyTo(output)
+                output.flush()
+            }
+        } ?: throw IOException("Unable to read image from clipboard")
+
+        // Confirm file was written and is not empty
+        if (!destFile.exists() || destFile.length() <= 0L) {
+            destFile.delete()
+            throw IOException("Image file was not written or is empty")
+        }
+
+        computeRelativeAssetPath(noteFilename, destFile.name)
+    } catch (e: Exception) {
+        Log.e("SlashNote", "Failed to save image to assets", e)
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, "Failed to save image: ${e.localizedMessage ?: "Unknown error"}", Toast.LENGTH_SHORT).show()
+        }
+        null
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun NoteEditorScreen(
     notesDir: String,
     filename: String,
     headingAnchor: String? = null,
+    restoreEntry: NoteNavEntry? = null,
+    onRestoreConsumed: () -> Unit = {},
+    fontSizeSp: Int = 16,
     isDarkTheme: Boolean,
+    appTheme: AppTheme = AppTheme.SLASHNOTE,
     isFocusMode: Boolean,
     isSourceMode: Boolean,
     isPreviewMode: Boolean,
@@ -1626,7 +1919,7 @@ fun NoteEditorScreen(
     onOpenCommandPalette: () -> Unit,
     onOpenDrawer: () -> Unit,
     onBack: () -> Unit,
-    onNavigateToWikilink: (targetTitle: String) -> Unit,
+    onNavigateToWikilink: (targetTitle: String, currentEntry: NoteNavEntry?) -> Unit,
     undoRedoManager: UndoRedoManager,
     onRegisterUndoRedo: (undo: (() -> Unit)?, redo: (() -> Unit)?) -> Unit
 ) {
@@ -1705,19 +1998,18 @@ fun NoteEditorScreen(
         }
     }
 
-    val handleBack: () -> Unit = remember {
-        {
-            scope.launch {
-                if (isDirty) {
-                    saveStatus = "Saving..."
-                    withContext(Dispatchers.IO) {
-                        saveNote(notesDir, filename, currentText)
-                    }
-                    isDirty = false
-                    saveStatus = "Saved just now"
+    val currentOnBack by rememberUpdatedState(onBack)
+    val handleBack: () -> Unit = {
+        scope.launch {
+            if (isDirty) {
+                saveStatus = "Saving..."
+                withContext(Dispatchers.IO) {
+                    saveNote(notesDir, filename, currentText)
                 }
-                onBack()
+                isDirty = false
+                saveStatus = "Saved just now"
             }
+            currentOnBack()
         }
     }
 
@@ -1727,9 +2019,46 @@ fun NoteEditorScreen(
 
     val context = LocalContext.current
 
-    val editorScrollState = rememberScrollState()
-    val previewLazyListState = rememberLazyListState()
-    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val defaultClipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+    val customClipboardManager = remember(defaultClipboardManager, context, notesDir, filename) {
+        object : androidx.compose.ui.platform.ClipboardManager {
+            override fun getText(): androidx.compose.ui.text.AnnotatedString? {
+                val clipUri = try {
+                    getClipboardImageUri(context)
+                } catch (_: Exception) {
+                    null
+                }
+                if (clipUri != null) {
+                    try {
+                        val relPath = saveImageToAssets(context, notesDir, clipUri, filename)
+                        if (relPath != null) {
+                            return androidx.compose.ui.text.AnnotatedString("![image]($relPath)")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("SlashNote", "Failed to paste image from clipboard", e)
+                    }
+                }
+                return defaultClipboardManager.getText()
+            }
+
+            override fun setText(annotatedString: androidx.compose.ui.text.AnnotatedString) {
+                defaultClipboardManager.setText(annotatedString)
+            }
+
+            override fun hasText(): Boolean {
+                val hasImage = try {
+                    getClipboardImageUri(context) != null
+                } catch (_: Exception) {
+                    false
+                }
+                return hasImage || defaultClipboardManager.hasText()
+            }
+        }
+    }
+
+    val editorScrollState = key(filename) { rememberScrollState() }
+    val previewLazyListState = key(filename) { rememberLazyListState() }
+    var textLayoutResult by remember(filename) { mutableStateOf<TextLayoutResult?>(null) }
     var savedScrollRatio by remember(filename) { mutableFloatStateOf(0f) }
 
     val handleTogglePreview = {
@@ -1750,11 +2079,13 @@ fun NoteEditorScreen(
                 topCharOffset in block.startOffset..block.endOffset
             }.coerceAtLeast(0)
 
+            onTogglePreviewMode()
             scope.launch {
-                previewLazyListState.scrollToItem(targetBlockIdx)
+                try {
+                    previewLazyListState.scrollToItem(targetBlockIdx)
+                } catch (_: Exception) {}
             }
             spanCache.clear()
-            onTogglePreviewMode()
         } else {
             val firstVisibleIdx = previewLazyListState.firstVisibleItemIndex
             val activeBlock = blocks.getOrNull(firstVisibleIdx)
@@ -1777,20 +2108,42 @@ fun NoteEditorScreen(
         }
     }
 
-    // Lazy load file body strictly on demand when editor opens
-    LaunchedEffect(filename) {
+    // Lazy load file body strictly on demand when editor opens.
+    // IMPORTANT: Never call previewLazyListState.scrollToItem() before readNote(),
+    // because when in Edit mode, MarkdownPreview's LazyColumn is not in the composition
+    // tree and scrollToItem() suspends indefinitely waiting for layout!
+    LaunchedEffect(notesDir, filename) {
         AppSettings.recordNoteVisited(context, filename)
         val content = withContext(Dispatchers.IO) {
             readNote(notesDir, filename)
         }
+        val initialCursor = if (restoreEntry != null && restoreEntry.filename == filename) {
+            restoreEntry.editorCursor.coerceIn(0, content.length)
+        } else {
+            0
+        }
+        initialLoadedContent = content
+        textFieldValue = TextFieldValue(text = content, selection = TextRange(initialCursor))
+        isDirty = false
+        saveStatus = "Saved just now"
+
         val notes = withContext(Dispatchers.IO) {
             listNotes(notesDir)
         }
-        textFieldValue = TextFieldValue(text = content)
-        initialLoadedContent = content
         allNotesList = notes
-        isDirty = false
-        saveStatus = "Saved just now"
+    }
+
+    // Scroll restoration for Editor Mode
+    LaunchedEffect(restoreEntry, textLayoutResult, initialLoadedContent, isPreviewMode) {
+        if (restoreEntry != null && restoreEntry.filename == filename && initialLoadedContent != null && !isPreviewMode) {
+            val targetY = if (editorScrollState.maxValue > 0) {
+                restoreEntry.editorScrollY.coerceIn(0, editorScrollState.maxValue)
+            } else {
+                restoreEntry.editorScrollY
+            }
+            editorScrollState.scrollTo(targetY)
+            onRestoreConsumed()
+        }
     }
 
     // Auto-save debounced 400ms on user typing pause
@@ -1816,7 +2169,7 @@ fun NoteEditorScreen(
 
     DisposableEffect(filename) {
         onDispose {
-            if (isDirty) {
+            if (isDirty && initialLoadedContent != null) {
                 saveNote(notesDir, filename, currentText)
             }
         }
@@ -1837,9 +2190,10 @@ fun NoteEditorScreen(
         }
     }
 
-    val visualTransformation = remember(isDarkTheme, isSearchOpen, searchQuery, matches, currentMatchIndex) {
+    val visualTransformation = remember(isDarkTheme, appTheme, isSearchOpen, searchQuery, matches, currentMatchIndex) {
         MarkdownVisualTransformation(
             isDarkTheme = isDarkTheme,
+            appTheme = appTheme,
             cache = spanCache,
             searchQuery = if (isSearchOpen) searchQuery else "",
             searchMatches = if (isSearchOpen) matches else emptyList(),
@@ -1942,7 +2296,7 @@ fun NoteEditorScreen(
             AnimatedContent(
                 targetState = isPreviewMode,
                 transitionSpec = {
-                    (fadeIn(animationSpec = tween(180, easing = LinearEasing)) + 
+                    (fadeIn(animationSpec = tween(180, easing = LinearEasing)) +
                      scaleIn(initialScale = 0.98f, animationSpec = tween(180)))
                         .togetherWith(
                             fadeOut(animationSpec = tween(140, easing = LinearEasing))
@@ -1955,31 +2309,95 @@ fun NoteEditorScreen(
                     MarkdownPreview(
                         content = noteText,
                         headingAnchor = headingAnchor,
+                        restoreIndex = if (restoreEntry != null && restoreEntry.filename == filename) restoreEntry.previewIndex else null,
+                        restoreOffset = if (restoreEntry != null && restoreEntry.filename == filename) restoreEntry.previewOffset else null,
+                        onRestoreConsumed = onRestoreConsumed,
                         listState = previewLazyListState,
-                        onWikilinkClick = { title -> onNavigateToWikilink(title) },
+                        baseFontSizeSp = fontSizeSp,
+                        notesDir = notesDir,
+                        noteFilename = filename,
+                        onWikilinkClick = { title ->
+                            val currentEntry = NoteNavEntry(
+                                filename = filename,
+                                isPreviewMode = isPreviewMode,
+                                previewIndex = previewLazyListState.firstVisibleItemIndex,
+                                previewOffset = previewLazyListState.firstVisibleItemScrollOffset,
+                                editorScrollY = editorScrollState.value,
+                                editorCursor = textFieldValue.selection.start
+                            )
+                            onNavigateToWikilink(title, currentEntry)
+                        },
+                        onToggleTaskItem = { item ->
+                            val text = textFieldValue.text
+                            val start = item.startOffset.coerceIn(0, text.length)
+                            val end = item.endOffset.coerceIn(0, text.length)
+                            if (start < end) {
+                                val line = text.substring(start, end)
+                                val updatedLine = if (Regex("\\[[xX]\\]").containsMatchIn(line)) {
+                                    line.replaceFirst(Regex("\\[[xX]\\]"), "[ ]")
+                                } else if (Regex("\\[[ ]?\\]").containsMatchIn(line)) {
+                                    line.replaceFirst(Regex("\\[[ ]?\\]"), "[x]")
+                                } else {
+                                    line
+                                }
+                                if (updatedLine != line) {
+                                    val newText = text.substring(0, start) + updatedLine + text.substring(end)
+                                    textFieldValue = TextFieldValue(text = newText, selection = textFieldValue.selection)
+                                    saveNote(notesDir, filename, newText)
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    MarkdownEditor(
-                        value = textFieldValue,
-                        onValueChange = { newTfv ->
-                            val oldTfv = textFieldValue
-                            val oldText = oldTfv.text
-                            val newText = newTfv.text
-                            val cursor = newTfv.selection.start
+                    CompositionLocalProvider(androidx.compose.ui.platform.LocalClipboardManager provides customClipboardManager) {
+                        MarkdownEditor(
+                            value = textFieldValue,
+                            fontSizeSp = fontSizeSp,
+                            onValueChange = { newTfv ->
+                                val oldTfv = textFieldValue
+                                val oldText = oldTfv.text
+                                val newText = newTfv.text
+                                val cursor = newTfv.selection.start
 
-                            if (newText != oldText) {
-                                undoRedoManager.registerChange(oldTfv, newTfv)
-                            }
+                                if (newText != oldText) {
+                                    undoRedoManager.registerChange(oldTfv, newTfv)
+                                }
 
-                            // 1. Check for Obsidian-Style Auto-List Continuation & Exit when Enter (\n) is pressed
-                            if (newText.length == oldText.length + 1 && cursor > 0 && newText[cursor - 1] == '\n') {
-                                val prevNewlineIdx = newText.lastIndexOf('\n', cursor - 2)
-                                val lineStart = if (prevNewlineIdx == -1) 0 else prevNewlineIdx + 1
-                                val lineText = newText.substring(lineStart, cursor - 1)
+                                // 1. Check for Markdown Task-List Syntax Auto-Conversion when Space is typed
+                                // Supports typing "- []", "- [ ]", "- [x]", "- [X]" (and with *, +) at line start followed by space
+                                if (newText.length == oldText.length + 1 && cursor > 0 && newText[cursor - 1] == ' ') {
+                                    val prevNewlineIdx = newText.lastIndexOf('\n', cursor - 2)
+                                    val lineStart = if (prevNewlineIdx == -1) 0 else prevNewlineIdx + 1
+                                    val lineBeforeCursor = newText.substring(lineStart, cursor)
 
-                                // Match Task List: e.g. "- [ ] ", "- [x] "
-                                val taskListMatch = Regex("^(\\s*[-*+]\\s+\\[[ xX]\\]\\s*)(.*)$").find(lineText)
+                                    val taskPattern = Regex("^(\\s*[-*+])\\s*\\[([ xX]?)\\]\\s$")
+                                    val match = taskPattern.find(lineBeforeCursor)
+                                    if (match != null) {
+                                        val listMarker = match.groupValues[1]
+                                        val checkChar = match.groupValues[2]
+                                        val normalizedMarker = when (checkChar) {
+                                            "x" -> "$listMarker [x] "
+                                            "X" -> "$listMarker [X] "
+                                            else -> "$listMarker [ ] "
+                                        }
+                                        val beforeLine = newText.substring(0, lineStart)
+                                        val afterCursor = newText.substring(cursor)
+                                        val updatedText = "$beforeLine$normalizedMarker$afterCursor"
+                                        val updatedCursor = lineStart + normalizedMarker.length
+                                        textFieldValue = TextFieldValue(text = updatedText, selection = TextRange(updatedCursor))
+                                        return@MarkdownEditor
+                                    }
+                                }
+
+                                // 2. Check for Obsidian-Style Auto-List Continuation & Exit when Enter (\n) is pressed
+                                if (newText.length == oldText.length + 1 && cursor > 0 && newText[cursor - 1] == '\n') {
+                                    val prevNewlineIdx = newText.lastIndexOf('\n', cursor - 2)
+                                    val lineStart = if (prevNewlineIdx == -1) 0 else prevNewlineIdx + 1
+                                    val lineText = newText.substring(lineStart, cursor - 1)
+
+                                    // Match Task List: e.g. "- [ ] ", "- [x] ", "- [] "
+                                    val taskListMatch = Regex("^(\\s*[-*+]\\s+\\[[ xX]?\\]\\s*)(.*)$").find(lineText)
                                 if (taskListMatch != null) {
                                     val prefix = taskListMatch.groupValues[1]
                                     val content = taskListMatch.groupValues[2]
@@ -2070,28 +2488,18 @@ fun NoteEditorScreen(
                         onTextLayout = { textLayoutResult = it },
                         modifier = Modifier.fillMaxSize()
                     )
+                    }
                 }
             }
 
-            // Floating Action Button (FAB) for '/' Slash Menu aligned at BottomEnd with imePadding
+            // Floating formatting toolbar docked above keyboard with imePadding
             if (!isPreviewMode && !isSearchOpen) {
-                FloatingActionButton(
-                    onClick = {
-                        isSlashMenuVisible = true
-                    },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    shape = RoundedCornerShape(16.dp),
+                FormattingToolbar(
+                    onTriggerSlashMenu = { isSlashMenuVisible = true },
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(bottom = 16.dp, end = 8.dp)
-                ) {
-                    Text(
-                        text = "/",
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                )
             }
 
             // Floating Lock Exit Button for Focus Mode (TopEnd)

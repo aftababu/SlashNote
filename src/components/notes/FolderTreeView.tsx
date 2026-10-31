@@ -33,7 +33,9 @@ import {
   PinIcon,
   CopyIcon,
   ArrowUpIcon,
+  PaletteIcon,
 } from "../icons";
+import { useTheme } from "../../context/ThemeContext";
 import * as notesService from "../../services/notes";
 import type { FolderNode, NoteMetadata, Settings } from "../../types/note";
 
@@ -157,6 +159,9 @@ const FileItem = memo(function FileItem({
           }}
           {...attributes}
           {...listeners}
+          data-file-item
+          data-file-depth={depth}
+          data-selected={isSelected || isMultiSelected || undefined}
           className={`flex items-center gap-1.5 py-[3px] cursor-pointer rounded-md select-none transition-colors ${
             isDragging
               ? "opacity-40"
@@ -305,6 +310,8 @@ const FolderItemComponent = memo(function FolderItem({
   const noteCount = countNotesInFolder(folder);
   const isEmpty = noteCount === 0 && folder.children.length === 0;
   const isFocused = focusedItemKey === `folder:${folder.path}`;
+  const { folderCategories, setFolderCategory } = useTheme();
+  const currentCategory = folderCategories[folder.path];
 
   const handleClick = useCallback(() => {
     onToggleCollapse(folder.path);
@@ -332,10 +339,15 @@ const FolderItemComponent = memo(function FolderItem({
           ref={setDragRef}
           {...attributes}
           {...listeners}
+          data-folder-container
+          data-folder-category={currentCategory ? String(currentCategory) : undefined}
+          data-folder-depth={depth}
+          data-folder-expanded={!isCollapsed ? "true" : "false"}
           className={isDragging ? "opacity-40" : ""}
         >
           <div
             ref={setDropRef}
+            data-folder-header
             className={`flex items-center gap-1.5 py-[3px] cursor-pointer rounded-md select-none transition-colors ${
               isOver
                 ? "bg-accent/10 ring-1 ring-accent"
@@ -432,6 +444,78 @@ const FolderItemComponent = memo(function FolderItem({
             New Subfolder
           </ContextMenu.Item>
           <ContextMenu.Separator className={menuSeparatorClass} />
+          <ContextMenu.Sub>
+            <ContextMenu.SubTrigger className={`${menuItemClass} justify-between`}>
+              <div className="flex items-center gap-2">
+                <PaletteIcon className="w-4 h-4 stroke-[1.6]" />
+                <span>Folder Color</span>
+              </div>
+              <ChevronRightIcon className="w-3.5 h-3.5 opacity-60 ml-auto" />
+            </ContextMenu.SubTrigger>
+            <ContextMenu.Portal>
+              <ContextMenu.SubContent className="min-w-56 bg-bg border border-border rounded-md shadow-lg py-1 z-50">
+                <ContextMenu.Item
+                  className={`${menuItemClass} justify-between`}
+                  onSelect={() => void setFolderCategory(folder.path, 1)}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-[var(--sp-folder-1,#bf7b87)] shrink-0 border border-black/10" />
+                    <span>Rose / Coral</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs text-text-muted">
+                    <span>Category 1</span>
+                    {currentCategory === 1 && (
+                      <span className="font-bold text-accent">✓</span>
+                    )}
+                  </div>
+                </ContextMenu.Item>
+                <ContextMenu.Item
+                  className={`${menuItemClass} justify-between`}
+                  onSelect={() => void setFolderCategory(folder.path, 2)}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-[var(--sp-folder-2,#9d8ab5)] shrink-0 border border-black/10" />
+                    <span>Lavender / Purple</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs text-text-muted">
+                    <span>Category 2</span>
+                    {currentCategory === 2 && (
+                      <span className="font-bold text-accent">✓</span>
+                    )}
+                  </div>
+                </ContextMenu.Item>
+                <ContextMenu.Item
+                  className={`${menuItemClass} justify-between`}
+                  onSelect={() => void setFolderCategory(folder.path, 3)}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-[var(--sp-folder-3,#cf9855)] shrink-0 border border-black/10" />
+                    <span>Amber / Gold</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs text-text-muted">
+                    <span>Category 3</span>
+                    {currentCategory === 3 && (
+                      <span className="font-bold text-accent">✓</span>
+                    )}
+                  </div>
+                </ContextMenu.Item>
+                <ContextMenu.Separator className={menuSeparatorClass} />
+                <ContextMenu.Item
+                  className={`${menuItemClass} justify-between`}
+                  onSelect={() => void setFolderCategory(folder.path, null)}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-[var(--sp-folder-default,#918e8a)] shrink-0 border border-black/10" />
+                    <span>Remove Category</span>
+                  </div>
+                  {(!currentCategory || currentCategory === 0) && (
+                    <span className="text-xs font-bold text-accent">✓</span>
+                  )}
+                </ContextMenu.Item>
+              </ContextMenu.SubContent>
+            </ContextMenu.Portal>
+          </ContextMenu.Sub>
+          <ContextMenu.Separator className={menuSeparatorClass} />
           <ContextMenu.Item
             className={menuItemClass}
             onSelect={() => {
@@ -518,6 +602,7 @@ export function FolderTreeView({
     moveNote,
     moveFolder,
   } = useNotes();
+  const { migrateFolderCategory } = useTheme();
 
   const [collapsedFolders, setCollapsedFolders] =
     useState<Set<string>>(loadCollapsedFolders);
@@ -655,7 +740,12 @@ export function FolderTreeView({
     async (newName: string) => {
       if (folderToRename) {
         try {
+          const parent = folderToRename.includes("/")
+            ? folderToRename.substring(0, folderToRename.lastIndexOf("/") + 1)
+            : "";
+          const newPath = parent + newName;
           await renameFolder(folderToRename, newName);
+          await migrateFolderCategory(folderToRename, newPath);
           setFolderToRename(null);
           setRenameDialogOpen(false);
         } catch (error) {
@@ -664,7 +754,7 @@ export function FolderTreeView({
         }
       }
     },
-    [folderToRename, renameFolder],
+    [folderToRename, renameFolder, migrateFolderCategory],
   );
 
   const handleRenameNoteConfirm = useCallback(

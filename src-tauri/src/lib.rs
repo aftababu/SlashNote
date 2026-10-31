@@ -63,6 +63,7 @@ pub struct ThemeColors {
 #[serde(rename_all = "camelCase")]
 pub struct ThemeSettings {
     pub mode: String, // "light" | "dark" | "system"
+    pub name: Option<String>, // "slashnote" | "obsidian-soft-paper"
     pub custom_light_colors: Option<ThemeColors>,
     pub custom_dark_colors: Option<ThemeColors>,
 }
@@ -71,6 +72,7 @@ impl Default for ThemeSettings {
     fn default() -> Self {
         Self {
             mode: "system".to_string(),
+            name: Some("slashnote".to_string()),
             custom_light_colors: None,
             custom_dark_colors: None,
         }
@@ -127,10 +129,18 @@ pub struct Settings {
     pub folders_enabled: Option<bool>,
     #[serde(rename = "ignoredPatterns")]
     pub ignored_patterns: Option<Vec<String>>,
+    #[serde(rename = "ignoredFileTypes")]
+    pub ignored_file_types: Option<Vec<String>>,
     #[serde(rename = "customColorsLight")]
     pub custom_colors_light: Option<std::collections::HashMap<String, String>>,
     #[serde(rename = "customColorsDark")]
     pub custom_colors_dark: Option<std::collections::HashMap<String, String>>,
+    #[serde(rename = "softPaperFolderColorsLight")]
+    pub soft_paper_folder_colors_light: Option<std::collections::HashMap<String, String>>,
+    #[serde(rename = "softPaperFolderColorsDark")]
+    pub soft_paper_folder_colors_dark: Option<std::collections::HashMap<String, String>>,
+    #[serde(rename = "folderCategories")]
+    pub folder_categories: Option<std::collections::HashMap<String, u8>>,
 }
 
 // Search result
@@ -682,6 +692,11 @@ fn get_effective_ignored_dirs(settings: &Settings) -> Vec<String> {
     })
 }
 
+/// Get the effective ignored file types from settings (or defaults if not customized).
+fn get_effective_ignored_file_types(settings: &Settings) -> Vec<String> {
+    settings.ignored_file_types.clone().unwrap_or_else(slash_notes_core::gitignore::get_default_extensions)
+}
+
 /// Filter for WalkDir: skips excluded and user-ignored directories.
 fn is_visible_notes_entry(entry: &walkdir::DirEntry, ignored_dirs: &[String]) -> bool {
     if entry.file_type().is_dir() {
@@ -923,6 +938,13 @@ fn initialize_notes_folder(app: &AppHandle, path_buf: &PathBuf, state: &AppState
             let mut index = state.search_index.lock().expect("search index mutex");
             *index = Some(search_index);
         }
+    }
+
+    // Synchronize vault's .gitignore with configured ignored file types
+    {
+        let settings = state.settings.read().expect("settings read lock");
+        let effective_exts = get_effective_ignored_file_types(&settings);
+        let _ = slash_notes_core::gitignore::sync_gitignore_file(path_buf, &effective_exts);
     }
 
     Ok(normalized_path)
@@ -1949,6 +1971,9 @@ fn update_settings(
     let settings = state.settings.read().expect("settings read lock");
     save_settings(&folder, &settings).map_err(|e| e.to_string())?;
 
+    let effective_exts = get_effective_ignored_file_types(&settings);
+    let _ = slash_notes_core::gitignore::sync_gitignore_file(&PathBuf::from(&folder), &effective_exts);
+
     Ok(())
 }
 
@@ -1983,6 +2008,9 @@ fn update_git_enabled(
 
     let settings = state.settings.read().expect("settings read lock");
     save_settings(&folder, &settings).map_err(|e| e.to_string())?;
+
+    let effective_exts = get_effective_ignored_file_types(&settings);
+    let _ = slash_notes_core::gitignore::sync_gitignore_file(&PathBuf::from(&folder), &effective_exts);
 
     Ok(())
 }
@@ -2489,9 +2517,34 @@ fn copy_to_clipboard(app: AppHandle, text: String) -> Result<(), String> {
     app.clipboard().write_text(text).map_err(|e| e.to_string())
 }
 
+fn compute_relative_asset_path(note_id: Option<&str>, target_name: &str) -> String {
+    let depth = if let Some(nid) = note_id {
+        let normalized = nid.replace('\\', "/");
+        let trimmed = normalized.trim_start_matches('/');
+        if let Some(last_slash) = trimmed.rfind('/') {
+            let folder_part = &trimmed[..last_slash];
+            folder_part
+                .split('/')
+                .filter(|s| !s.is_empty() && *s != ".")
+                .count()
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    let prefix = if depth > 0 {
+        "../".repeat(depth)
+    } else {
+        String::new()
+    };
+    format!("{}assets/{}", prefix, target_name)
+}
+
 #[tauri::command]
 async fn save_clipboard_image(
     image_bytes: Vec<u8>,
+    note_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // Guard against empty clipboard payload
@@ -2507,11 +2560,11 @@ async fn save_clipboard_image(
             .ok_or("Notes folder not set")?
     };
 
-    // Create assets folder path
+    // Create assets folder path if it does not exist
     let assets_dir = PathBuf::from(&folder).join("assets");
     fs::create_dir_all(&assets_dir)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to create assets directory: {}", e))?;
 
     // Generate unique filename with timestamp
     let timestamp = std::time::SystemTime::now()
@@ -2519,12 +2572,32 @@ async fn save_clipboard_image(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let mut target_name = format!("screenshot-{}.png", timestamp);
+    // Detect image extension from magic bytes
+    let ext = if image_bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        "png"
+    } else if image_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpg"
+    } else if image_bytes.starts_with(b"GIF8") {
+        "gif"
+    } else if image_bytes.len() >= 12
+        && &image_bytes[0..4] == b"RIFF"
+        && &image_bytes[8..12] == b"WEBP"
+    {
+        "webp"
+    } else if image_bytes.starts_with(b"<svg")
+        || (image_bytes.len() > 10 && image_bytes.starts_with(b"<?xml"))
+    {
+        "svg"
+    } else {
+        "png"
+    };
+
+    let mut target_name = format!("screenshot-{}.{}", timestamp, ext);
     let mut counter = 1;
     let mut target_path = assets_dir.join(&target_name);
 
     while target_path.exists() {
-        target_name = format!("screenshot-{}-{}.png", timestamp, counter);
+        target_name = format!("screenshot-{}-{}.{}", timestamp, counter, ext);
         target_path = assets_dir.join(&target_name);
         counter += 1;
     }
@@ -2532,15 +2605,28 @@ async fn save_clipboard_image(
     // Write the file
     fs::write(&target_path, &image_bytes)
         .await
-        .map_err(|_| "Failed to write image".to_string())?;
+        .map_err(|e| format!("Failed to write image: {}", e))?;
 
-    // Return relative path
-    Ok(format!("assets/{}", target_name))
+    // Confirm file was written and is not empty
+    if !target_path.exists()
+        || fs::metadata(&target_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+            == 0
+    {
+        let _ = fs::remove_file(&target_path).await;
+        return Err("Image file was not written successfully or is empty".to_string());
+    }
+
+    // Return relative path adjusted for note depth
+    Ok(compute_relative_asset_path(note_id.as_deref(), &target_name))
 }
 
 #[tauri::command]
 async fn copy_image_to_assets(
     source_path: String,
+    note_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let folder = {
@@ -2583,7 +2669,7 @@ async fn copy_image_to_assets(
     let assets_dir = PathBuf::from(&folder).join("assets");
     fs::create_dir_all(&assets_dir)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to create assets directory: {}", e))?;
 
     // Generate unique filename
     let mut target_name = format!("{}.{}", sanitized_name, extension);
@@ -2599,10 +2685,22 @@ async fn copy_image_to_assets(
     // Copy the file
     fs::copy(&source, &target_path)
         .await
-        .map_err(|_| "Failed to copy image".to_string())?;
+        .map_err(|e| format!("Failed to copy image: {}", e))?;
 
-    // Return both relative path and filename for frontend to construct the URL
-    Ok(format!("assets/{}", target_name))
+    // Confirm file was written and is not empty
+    if !target_path.exists()
+        || fs::metadata(&target_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+            == 0
+    {
+        let _ = fs::remove_file(&target_path).await;
+        return Err("Copied image file is missing or empty".to_string());
+    }
+
+    // Return relative path adjusted for note depth
+    Ok(compute_relative_asset_path(note_id.as_deref(), &target_name))
 }
 
 #[tauri::command]
@@ -2632,6 +2730,56 @@ fn rebuild_search_index(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 fn get_default_ignored_patterns() -> Vec<String> {
     DEFAULT_IGNORED_DIRS.iter().map(|s| s.to_string()).collect()
+}
+
+#[tauri::command]
+fn get_default_ignored_file_types() -> Vec<String> {
+    slash_notes_core::gitignore::get_default_extensions()
+}
+
+#[tauri::command]
+fn parse_and_validate_ignored_file_types(input: String) -> Result<Vec<String>, String> {
+    slash_notes_core::gitignore::parse_and_normalize_list(&input)
+}
+
+#[tauri::command]
+fn update_ignored_file_types(
+    types: Option<Vec<String>>,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let folder = {
+        let app_config = state.app_config.read().expect("app_config read lock");
+        app_config.notes_folder.clone().ok_or("Notes folder not set")?
+    };
+
+    let validated = match types {
+        Some(list) => {
+            let mut normalized = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for item in list {
+                let norm = slash_notes_core::gitignore::normalize_extension(&item)?;
+                if seen.insert(norm.clone()) {
+                    normalized.push(norm);
+                }
+            }
+            Some(normalized)
+        }
+        None => None,
+    };
+
+    {
+        let mut settings = state.settings.write().expect("settings write lock");
+        settings.ignored_file_types = validated;
+    }
+
+    let settings = state.settings.read().expect("settings read lock");
+    save_settings(&folder, &settings).map_err(|e| e.to_string())?;
+
+    let effective_exts = get_effective_ignored_file_types(&settings);
+    slash_notes_core::gitignore::sync_gitignore_file(&PathBuf::from(&folder), &effective_exts)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 // UI helper commands - wrap Tauri plugins for consistent invoke-based API
@@ -4094,6 +4242,9 @@ pub fn run() {
             start_file_watcher,
             rebuild_search_index,
             get_default_ignored_patterns,
+            get_default_ignored_file_types,
+            parse_and_validate_ignored_file_types,
+            update_ignored_file_types,
             copy_to_clipboard,
             copy_image_to_assets,
             save_clipboard_image,

@@ -7,12 +7,18 @@ object AppSettings {
     private const val PREFS_NAME = "slashnote_settings"
     private const val KEY_NOTE_TEMPLATE = "key_note_template"
     private const val KEY_IGNORED_PATTERNS = "key_ignored_patterns"
+    private const val KEY_IGNORED_FILE_TYPES = "key_ignored_file_types"
     private const val KEY_PINNED_NOTE_IDS = "key_pinned_note_ids"
     private const val KEY_FONT_SIZE_SP = "key_font_size_sp"
     private const val KEY_IS_RTL = "key_is_rtl"
     private const val KEY_CUSTOM_VAULT_PATH = "key_custom_vault_path"
     private const val KEY_SHOW_ALL_FILES = "key_show_all_files"
     private const val KEY_RECENTLY_VISITED_NOTES = "key_recently_visited_notes"
+    private const val KEY_THEME_NAME = "key_theme_name"
+    private const val KEY_DARK_THEME = "key_dark_theme"
+    private const val KEY_SP_FOLDER_COLORS_LIGHT = "key_sp_folder_colors_light"
+    private const val KEY_SP_FOLDER_COLORS_DARK = "key_sp_folder_colors_dark"
+    private const val KEY_FOLDER_CATEGORIES = "key_folder_categories"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -85,6 +91,21 @@ object AppSettings {
         getPrefs(context).edit().putString(KEY_IGNORED_PATTERNS, patterns).apply()
     }
 
+    fun getIgnoredFileTypes(context: Context): List<String>? {
+        val raw = getPrefs(context).getString(KEY_IGNORED_FILE_TYPES, null) ?: return null
+        if (raw.isBlank()) return emptyList()
+        return raw.split(",").map { it.trim() }.filter { it.isNotBlank() }
+    }
+
+    fun saveIgnoredFileTypes(context: Context, types: List<String>?) {
+        if (types == null) {
+            getPrefs(context).edit().remove(KEY_IGNORED_FILE_TYPES).apply()
+        } else {
+            val joined = types.joinToString(",")
+            getPrefs(context).edit().putString(KEY_IGNORED_FILE_TYPES, joined).apply()
+        }
+    }
+
     fun getPinnedNoteIds(context: Context): Set<String> {
         return getPrefs(context).getStringSet(KEY_PINNED_NOTE_IDS, emptySet()) ?: emptySet()
     }
@@ -116,5 +137,102 @@ object AppSettings {
 
     fun saveIsRtl(context: Context, isRtl: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_IS_RTL, isRtl).apply()
+    }
+
+    fun getThemeName(context: Context): String {
+        return getPrefs(context).getString(KEY_THEME_NAME, "slashnote") ?: "slashnote"
+    }
+
+    fun saveThemeName(context: Context, themeName: String) {
+        getPrefs(context).edit().putString(KEY_THEME_NAME, themeName).apply()
+    }
+
+    fun getDarkTheme(context: Context, systemDefault: Boolean): Boolean {
+        val prefs = getPrefs(context)
+        return if (prefs.contains(KEY_DARK_THEME)) {
+            prefs.getBoolean(KEY_DARK_THEME, systemDefault)
+        } else {
+            systemDefault
+        }
+    }
+
+    fun saveDarkTheme(context: Context, isDark: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_DARK_THEME, isDark).apply()
+    }
+
+    fun getSoftPaperFolderColors(context: Context, isDark: Boolean): Map<String, String> {
+        val prefKey = if (isDark) KEY_SP_FOLDER_COLORS_DARK else KEY_SP_FOLDER_COLORS_LIGHT
+        val raw = getPrefs(context).getString(prefKey, "") ?: ""
+        if (raw.isBlank()) return emptyMap()
+        return raw.split(";")
+            .mapNotNull { entry ->
+                val parts = entry.split("=", limit = 2)
+                if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
+                    parts[0].trim() to parts[1].trim()
+                } else null
+            }
+            .toMap()
+    }
+
+    fun saveSoftPaperFolderColor(context: Context, isDark: Boolean, key: String, hexColor: String) {
+        val current = getSoftPaperFolderColors(context, isDark).toMutableMap()
+        current[key] = hexColor
+        val prefKey = if (isDark) KEY_SP_FOLDER_COLORS_DARK else KEY_SP_FOLDER_COLORS_LIGHT
+        val serialized = current.entries.joinToString(";") { "${it.key}=${it.value}" }
+        getPrefs(context).edit().putString(prefKey, serialized).apply()
+    }
+
+    fun resetSoftPaperFolderColor(context: Context, isDark: Boolean, key: String) {
+        val current = getSoftPaperFolderColors(context, isDark).toMutableMap()
+        current.remove(key)
+        val prefKey = if (isDark) KEY_SP_FOLDER_COLORS_DARK else KEY_SP_FOLDER_COLORS_LIGHT
+        if (current.isEmpty()) {
+            getPrefs(context).edit().remove(prefKey).apply()
+        } else {
+            val serialized = current.entries.joinToString(";") { "${it.key}=${it.value}" }
+            getPrefs(context).edit().putString(prefKey, serialized).apply()
+        }
+    }
+
+    fun resetAllSoftPaperFolderColors(context: Context, isDark: Boolean) {
+        val prefKey = if (isDark) KEY_SP_FOLDER_COLORS_DARK else KEY_SP_FOLDER_COLORS_LIGHT
+        getPrefs(context).edit().remove(prefKey).apply()
+    }
+
+    fun getFolderCategories(context: Context): Map<String, Int> {
+        val raw = getPrefs(context).getString(KEY_FOLDER_CATEGORIES, "") ?: ""
+        if (raw.isBlank()) return emptyMap()
+        return raw.split(";").mapNotNull { entry ->
+            val parts = entry.split("=", limit = 2)
+            if (parts.size == 2 && parts[0].isNotBlank()) {
+                val cat = parts[1].toIntOrNull()
+                if (cat != null && cat in 1..3) parts[0].trim() to cat else null
+            } else null
+        }.toMap()
+    }
+
+    fun setFolderCategory(context: Context, folderPath: String, category: Int?) {
+        val current = getFolderCategories(context).toMutableMap()
+        if (category == null || category !in 1..3) {
+            current.remove(folderPath)
+        } else {
+            current[folderPath] = category
+        }
+        if (current.isEmpty()) {
+            getPrefs(context).edit().remove(KEY_FOLDER_CATEGORIES).apply()
+        } else {
+            val serialized = current.entries.joinToString(";") { "${it.key}=${it.value}" }
+            getPrefs(context).edit().putString(KEY_FOLDER_CATEGORIES, serialized).apply()
+        }
+    }
+
+    fun updateFolderCategoryPath(context: Context, oldPath: String, newPath: String) {
+        val current = getFolderCategories(context).toMutableMap()
+        val cat = current.remove(oldPath)
+        if (cat != null) {
+            current[newPath] = cat
+            val serialized = current.entries.joinToString(";") { "${it.key}=${it.value}" }
+            getPrefs(context).edit().putString(KEY_FOLDER_CATEGORIES, serialized).apply()
+        }
     }
 }

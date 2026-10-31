@@ -3,6 +3,7 @@ package com.slashnote.app.ui.editor
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -17,8 +18,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.magnifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import java.io.File
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -54,6 +61,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.slashnote.app.ui.theme.LocalExtendedColors
+import com.slashnote.app.ui.theme.SlashNoteExtendedColors
 import com.slashnote.app.ui.theme.StitchAccentCoral
 import com.slashnote.app.ui.theme.StitchBackground
 import com.slashnote.app.ui.theme.StitchBorder
@@ -192,14 +201,21 @@ fun DraggableEditorScrollbar(
  * - Hardware Layer Caching (graphicsLayer)
  */
 @Composable
-fun MarkdownPreview(
+internal fun MarkdownPreview(
     content: String,
     modifier: Modifier = Modifier,
     headingAnchor: String? = null,
+    restoreIndex: Int? = null,
+    restoreOffset: Int? = null,
     initialScrollRatio: Float = 0f,
     listState: LazyListState = rememberLazyListState(),
+    baseFontSizeSp: Int = 16,
+    notesDir: String = "",
+    noteFilename: String = "",
+    onRestoreConsumed: (() -> Unit)? = null,
     onScrollRatioChanged: ((Float) -> Unit)? = null,
-    onWikilinkClick: ((String) -> Unit)? = null
+    onWikilinkClick: ((String) -> Unit)? = null,
+    onToggleTaskItem: ((MdBlock.ListItem) -> Unit)? = null
 ) {
     val blocks = remember(content) { parseMarkdownBlocks(content) }
 
@@ -219,9 +235,17 @@ fun MarkdownPreview(
     }
 
     LaunchedEffect(initialScrollRatio, blocks) {
-        if (headingAnchor.isNullOrBlank() && initialScrollRatio > 0f && blocks.isNotEmpty()) {
+        if (headingAnchor.isNullOrBlank() && restoreIndex == null && initialScrollRatio > 0f && blocks.isNotEmpty()) {
             val targetIndex = (blocks.size * initialScrollRatio).toInt().coerceIn(0, blocks.size - 1)
             listState.scrollToItem(targetIndex)
+        }
+    }
+
+    LaunchedEffect(restoreIndex, restoreOffset, blocks) {
+        if (restoreIndex != null && headingAnchor.isNullOrBlank() && blocks.isNotEmpty()) {
+            val targetIndex = restoreIndex.coerceIn(0, blocks.size - 1)
+            listState.scrollToItem(targetIndex, restoreOffset ?: 0)
+            onRestoreConsumed?.invoke()
         }
     }
 
@@ -270,7 +294,7 @@ fun MarkdownPreview(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 80.dp),
+                    contentPadding = PaddingValues(start = 6.dp, end = 6.dp, bottom = 80.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     flingBehavior = androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
                 ) {
@@ -286,15 +310,16 @@ fun MarkdownPreview(
                                 }
                         ) {
                             when (block) {
-                                is MdBlock.Heading -> HeadingBlock(block, content)
-                                is MdBlock.Paragraph -> ParagraphBlock(block, content, onWikilinkClick)
-                                is MdBlock.ListBlock -> ListBlock(block, content, onWikilinkClick)
-                                is MdBlock.Blockquote -> BlockquoteBlock(block, content, onWikilinkClick)
+                                is MdBlock.Heading -> HeadingBlock(block, content, baseFontSizeSp)
+                                is MdBlock.Paragraph -> ParagraphBlock(block, content, onWikilinkClick, baseFontSizeSp)
+                                is MdBlock.ListBlock -> ListBlock(block, content, onWikilinkClick, onToggleTaskItem, baseFontSizeSp)
+                                is MdBlock.Blockquote -> BlockquoteBlock(block, content, onWikilinkClick, baseFontSizeSp)
                                 is MdBlock.CodeBlock -> CodeBlockView(block)
                                 is MdBlock.MathBlock -> MathBlockView(block)
-                                is MdBlock.TableBlock -> TableBlock(block, content, onWikilinkClick)
-                                is MdBlock.HorizontalRule -> HorizontalDivider(color = StitchBorder.copy(alpha = 0.4f), thickness = 1.dp)
+                                is MdBlock.TableBlock -> TableBlock(block, content, onWikilinkClick, baseFontSizeSp)
+                                is MdBlock.HorizontalRule -> HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), thickness = 1.dp)
                                 is MdBlock.ListItem -> Unit
+                                is MdBlock.ImageBlock -> ImageBlockView(block, notesDir, noteFilename)
                             }
                         }
                     }
@@ -350,6 +375,13 @@ internal sealed class MdBlock {
     ) : MdBlock()
 
     class HorizontalRule(override val id: String, override val startOffset: Int, override val endOffset: Int) : MdBlock()
+    class ImageBlock(
+        override val id: String,
+        override val startOffset: Int,
+        override val endOffset: Int,
+        val alt: String,
+        val url: String
+    ) : MdBlock()
 }
 
 internal enum class Align { LEFT, CENTER, RIGHT }
@@ -359,10 +391,11 @@ internal enum class Align { LEFT, CENTER, RIGHT }
 private val HRULE_REGEX = Regex("^(\\*{3,}|-{3,}|_{3,})$")
 private val HEADING_REGEX = Regex("^(#{1,6})\\s+(.*)$")
 private val LIST_ITEM_REGEX = Regex("^\\s*([-*+]|\\d+\\.)\\s+(.*)$")
-private val TASK_REGEX = Regex("^\\[([ xX])\\]\\s+(.*)$")
+private val TASK_REGEX = Regex("^\\[([ xX]?)\\]\\s*(.*)$")
 private val HEADING_PREFIX_REGEX = Regex("^#{1,6}\\s+")
 private val LIST_PREFIX_REGEX = Regex("^\\s*([-*+]|\\d+\\.)\\s+")
 private val TABLE_SPLIT_REGEX = Regex("(?<!\\\\)\\|")
+private val IMAGE_BLOCK_REGEX = Regex("""^!\[(.*?)\]\((.*?)\)$""")
 
 internal fun parseMarkdownBlocks(source: String): List<MdBlock> {
     val lines = source.replace("\r\n", "\n").split("\n")
@@ -485,6 +518,14 @@ internal fun parseMarkdownBlocks(source: String): List<MdBlock> {
             continue
         }
 
+        val imageMatch = IMAGE_BLOCK_REGEX.find(trimmed)
+        if (imageMatch != null) {
+            val (so, eo) = getOffsets(i, i)
+            blocks.add(MdBlock.ImageBlock(nextId(), so, eo, imageMatch.groupValues[1], imageMatch.groupValues[2]))
+            i++
+            continue
+        }
+
         val headingMatch = HEADING_REGEX.find(trimmed)
         if (headingMatch != null) {
             val level = headingMatch.groupValues[1].length
@@ -569,6 +610,7 @@ internal fun parseMarkdownBlocks(source: String): List<MdBlock> {
             if (l.trim().matches(HRULE_REGEX)) break
             if (l.trimStart().startsWith(">")) break
             if (LIST_PREFIX_REGEX.containsMatchIn(l)) break
+            if (IMAGE_BLOCK_REGEX.matches(l.trim())) break
             paraLines.add(l)
             i++
         }
@@ -640,22 +682,36 @@ private fun splitTableRow(row: String): List<String> {
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun HeadingBlock(block: MdBlock.Heading, raw: String) {
-    val annotated = remember(block.content, raw) {
-        inlineMarkdown(block.content, raw)
+private fun HeadingBlock(block: MdBlock.Heading, raw: String, baseFontSizeSp: Int = 16) {
+    val extColors = LocalExtendedColors.current
+    val annotated = remember(block.content, raw, extColors) {
+        inlineMarkdown(block.content, raw, extColors)
     }
     val size = when (block.level) {
-        1 -> 26.sp
-        2 -> 22.sp
-        3 -> 19.sp
-        4 -> 17.sp
-        else -> 15.sp
+        1 -> (baseFontSizeSp * 1.6f).sp
+        2 -> (baseFontSizeSp * 1.35f).sp
+        3 -> (baseFontSizeSp * 1.2f).sp
+        4 -> (baseFontSizeSp * 1.1f).sp
+        else -> baseFontSizeSp.sp
+    }
+    val headingColor = if (extColors.isSoftPaper) {
+        when (block.level) {
+            1 -> extColors.h1
+            2 -> extColors.h2
+            3 -> extColors.h3
+            4 -> extColors.h4
+            5 -> extColors.h5
+            else -> extColors.h6
+        }
+    } else {
+        MaterialTheme.colorScheme.onSurface
     }
     Text(
         text = annotated,
         fontSize = size,
+        fontFamily = if (extColors.isSoftPaper && (block.level == 1 || block.level == 2)) FontFamily.Serif else FontFamily.Default,
         fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.onSurface,
+        color = headingColor,
         lineHeight = size * 1.25f,
         modifier = Modifier.fillMaxWidth()
     )
@@ -691,14 +747,20 @@ private fun ClickableMarkdownText(
 }
 
 @Composable
-private fun ParagraphBlock(block: MdBlock.Paragraph, raw: String, onWikilinkClick: ((String) -> Unit)?) {
-    val annotated = remember(block.content, raw) {
-        inlineMarkdown(block.content, raw)
+private fun ParagraphBlock(
+    block: MdBlock.Paragraph,
+    raw: String,
+    onWikilinkClick: ((String) -> Unit)?,
+    baseFontSizeSp: Int = 16
+) {
+    val extColors = LocalExtendedColors.current
+    val annotated = remember(block.content, raw, extColors) {
+        inlineMarkdown(block.content, raw, extColors)
     }
     ClickableMarkdownText(
         annotatedString = annotated,
-        fontSize = 14.sp,
-        lineHeight = 21.sp,
+        fontSize = baseFontSizeSp.sp,
+        lineHeight = (baseFontSizeSp * 1.5f).sp,
         color = MaterialTheme.colorScheme.onSurface,
         onWikilinkClick = onWikilinkClick,
         modifier = Modifier.fillMaxWidth()
@@ -706,33 +768,53 @@ private fun ParagraphBlock(block: MdBlock.Paragraph, raw: String, onWikilinkClic
 }
 
 @Composable
-private fun ListBlock(block: MdBlock.ListBlock, raw: String, onWikilinkClick: ((String) -> Unit)?) {
+private fun ListBlock(
+    block: MdBlock.ListBlock,
+    raw: String,
+    onWikilinkClick: ((String) -> Unit)?,
+    onToggleTaskItem: ((MdBlock.ListItem) -> Unit)? = null,
+    baseFontSizeSp: Int = 16
+) {
+    val extColors = LocalExtendedColors.current
+    val itemFontSize = baseFontSizeSp.sp
+    val itemLineHeight = (baseFontSizeSp * 1.5f).sp
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         block.items.forEachIndexed { index, item ->
-            val annotatedItem = remember(item.content, raw) {
-                inlineMarkdown(item.content, raw)
+            val annotatedItem = remember(item.content, raw, extColors) {
+                inlineMarkdown(item.content, raw, extColors)
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top
             ) {
-                Box(modifier = Modifier.width(22.dp)) {
+                Box(
+                    modifier = Modifier
+                        .width(24.dp)
+                        .then(
+                            if (item.checked != null && onToggleTaskItem != null) {
+                                Modifier
+                                    .clip(CircleShape)
+                                    .clickable { onToggleTaskItem(item) }
+                            } else Modifier
+                        ),
+                    contentAlignment = Alignment.CenterStart
+                ) {
                     when {
                         item.checked != null -> {
                             Icon(
                                 imageVector = if (item.checked) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                contentDescription = null,
-                                tint = if (item.checked) StitchAccentCoral else StitchTextMuted,
-                                modifier = Modifier.size(16.dp)
+                                contentDescription = if (item.checked) "Completed task" else "Pending task",
+                                tint = if (item.checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                         block.ordered -> {
                             Text(
                                 text = "${block.startNumber + index}.",
-                                fontSize = 14.sp,
+                                fontSize = itemFontSize,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -740,9 +822,9 @@ private fun ListBlock(block: MdBlock.ListBlock, raw: String, onWikilinkClick: ((
                         else -> {
                             Text(
                                 text = "•",
-                                fontSize = 14.sp,
+                                fontSize = (baseFontSizeSp + 2).sp,
                                 fontWeight = FontWeight.Bold,
-                                color = StitchAccentCoral
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
@@ -750,8 +832,8 @@ private fun ListBlock(block: MdBlock.ListBlock, raw: String, onWikilinkClick: ((
                 Spacer(modifier = Modifier.width(6.dp))
                 ClickableMarkdownText(
                     annotatedString = annotatedItem,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
+                    fontSize = itemFontSize,
+                    lineHeight = itemLineHeight,
                     color = MaterialTheme.colorScheme.onSurface,
                     onWikilinkClick = onWikilinkClick,
                     modifier = Modifier.weight(1f)
@@ -762,9 +844,15 @@ private fun ListBlock(block: MdBlock.ListBlock, raw: String, onWikilinkClick: ((
 }
 
 @Composable
-private fun BlockquoteBlock(block: MdBlock.Blockquote, raw: String, onWikilinkClick: ((String) -> Unit)?) {
-    val annotated = remember(block.content, raw) {
-        inlineMarkdown(block.content, raw)
+private fun BlockquoteBlock(
+    block: MdBlock.Blockquote,
+    raw: String,
+    onWikilinkClick: ((String) -> Unit)?,
+    baseFontSizeSp: Int = 16
+) {
+    val extColors = LocalExtendedColors.current
+    val annotated = remember(block.content, raw, extColors) {
+        inlineMarkdown(block.content, raw, extColors)
     }
     Row(
         modifier = Modifier
@@ -775,13 +863,13 @@ private fun BlockquoteBlock(block: MdBlock.Blockquote, raw: String, onWikilinkCl
             modifier = Modifier
                 .width(4.dp)
                 .fillMaxHeight()
-                .background(StitchAccentCoral, RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp))
         )
         Spacer(modifier = Modifier.width(10.dp))
         ClickableMarkdownText(
             annotatedString = annotated,
-            fontSize = 14.sp,
-            lineHeight = 21.sp,
+            fontSize = baseFontSizeSp.sp,
+            lineHeight = (baseFontSizeSp * 1.5f).sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             onWikilinkClick = onWikilinkClick,
             modifier = Modifier.weight(1f)
@@ -789,13 +877,60 @@ private fun BlockquoteBlock(block: MdBlock.Blockquote, raw: String, onWikilinkCl
     }
 }
 
+private val CODE_TOKEN_REGEX = Regex(
+    "(//[^\\n]*|#[^\\n]*|/\\*[\\s\\S]*?\\*/)|" +
+    "(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')|" +
+    "\\b(public|private|protected|class|static|void|int|float|double|boolean|char|long|short|byte|return|if|else|for|while|do|switch|case|break|continue|import|package|new|try|catch|finally|throw|throws|interface|extends|implements|fun|val|var|const|let|function|def|from|as|in|is|when|object|companion|data|sealed|enum|true|false|null|async|await|struct|impl|fn|pub|use|mod|match|mut)\\b|" +
+    "\\b([A-Z][A-Za-z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*\\())\\b|" +
+    "\\b(\\d+(?:\\.\\d+)?)\\b"
+)
+
+private fun highlightCodeSyntax(code: String, extColors: SlashNoteExtendedColors, defaultColor: Color): AnnotatedString {
+    if (!extColors.isSoftPaper) {
+        return AnnotatedString(code)
+    }
+    return buildAnnotatedString {
+        var last = 0
+        CODE_TOKEN_REGEX.findAll(code).forEach { m ->
+            if (m.range.first > last) {
+                withStyle(SpanStyle(color = defaultColor)) {
+                    append(code.substring(last, m.range.first))
+                }
+            }
+            val g = m.groups
+            val tokenColor = when {
+                g[1] != null -> extColors.syntaxComment
+                g[2] != null -> extColors.syntaxString
+                g[3] != null -> extColors.syntaxKeyword
+                g[4] != null -> extColors.syntaxType
+                g[5] != null -> extColors.syntaxNumber
+                else -> defaultColor
+            }
+            withStyle(SpanStyle(color = tokenColor)) {
+                append(m.value)
+            }
+            last = m.range.last + 1
+        }
+        if (last < code.length) {
+            withStyle(SpanStyle(color = defaultColor)) {
+                append(code.substring(last))
+            }
+        }
+    }
+}
+
 @Composable
 private fun CodeBlockView(block: MdBlock.CodeBlock) {
     val clipboardManager = LocalClipboardManager.current
+    val extColors = LocalExtendedColors.current
+    val baseTextColor = MaterialTheme.colorScheme.onSurface
+    val highlightedCode = remember(block.code, extColors, baseTextColor) {
+        highlightCodeSyntax(block.code, extColors, baseTextColor)
+    }
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = StitchCodeBg,
-        border = BorderStroke(1.dp, StitchBorder),
+        color = if (extColors.isSoftPaper) extColors.codeBg else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, if (extColors.isSoftPaper) extColors.codeBorder else MaterialTheme.colorScheme.outline),
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 48.dp)
@@ -810,7 +945,7 @@ private fun CodeBlockView(block: MdBlock.CodeBlock) {
                     text = block.language.ifEmpty { "code" }.uppercase(),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = StitchTextMuted
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 DisableSelection {
                     IconButton(
@@ -822,7 +957,7 @@ private fun CodeBlockView(block: MdBlock.CodeBlock) {
                         Icon(
                             Icons.Default.ContentCopy,
                             contentDescription = "Copy code",
-                            tint = StitchTextMuted,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(14.dp)
                         )
                     }
@@ -831,11 +966,11 @@ private fun CodeBlockView(block: MdBlock.CodeBlock) {
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = block.code,
+                text = highlightedCode,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
                 lineHeight = 17.sp,
-                color = StitchCodeHighlight,
+                color = baseTextColor,
                 modifier = Modifier.horizontalScroll(rememberScrollState())
             )
         }
@@ -850,7 +985,7 @@ private fun MathBlockView(block: MdBlock.MathBlock) {
 
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = StitchCodeBg,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
         border = BorderStroke(1.dp, Color(0xFFC084FC).copy(alpha = 0.3f)),
         modifier = Modifier
             .fillMaxWidth()
@@ -878,8 +1013,143 @@ private fun MathBlockView(block: MdBlock.MathBlock) {
     }
 }
 
+internal fun resolveImageFile(notesDir: String, noteFilename: String, imageRef: String): File? {
+    if (imageRef.isBlank()) return null
+    return try {
+        val direct = File(imageRef)
+        if (direct.isAbsolute && direct.exists() && direct.isFile) {
+            return direct
+        }
+
+        val noteParent = if (notesDir.isNotBlank() && noteFilename.isNotBlank()) {
+            val nf = File(notesDir, noteFilename)
+            if (nf.parentFile != null && nf.parentFile!!.exists()) nf.parentFile!! else File(notesDir)
+        } else if (notesDir.isNotBlank()) {
+            File(notesDir)
+        } else {
+            null
+        }
+
+        if (noteParent != null) {
+            val relToNote = File(noteParent, imageRef).canonicalFile
+            if (relToNote.exists() && relToNote.isFile) {
+                return relToNote
+            }
+        }
+
+        if (notesDir.isNotBlank()) {
+            val cleanRef = imageRef.trimStart('/', '\\')
+            val relToRoot = File(notesDir, cleanRef).canonicalFile
+            if (relToRoot.exists() && relToRoot.isFile) {
+                return relToRoot
+            }
+        }
+        null
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun decodeSampledBitmapFromFile(path: String, reqWidth: Int = 1080, reqHeight: Int = 1920): androidx.compose.ui.graphics.ImageBitmap? {
+    return try {
+        val options = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeFile(path, options)
+        var inSampleSize = 1
+        if (options.outHeight > reqHeight || options.outWidth > reqWidth) {
+            val halfHeight = options.outHeight / 2
+            val halfWidth = options.outWidth / 2
+            while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        val decodeOptions = BitmapFactory.Options().apply {
+            this.inSampleSize = inSampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        BitmapFactory.decodeFile(path, decodeOptions)?.asImageBitmap()
+    } catch (_: Exception) {
+        null
+    }
+}
+
 @Composable
-private fun TableBlock(block: MdBlock.TableBlock, raw: String, onWikilinkClick: ((String) -> Unit)?) {
+private fun ImageBlockView(
+    block: MdBlock.ImageBlock,
+    notesDir: String,
+    noteFilename: String
+) {
+    val file = remember(block.url, notesDir, noteFilename) {
+        resolveImageFile(notesDir, noteFilename, block.url)
+    }
+
+    val bitmap = remember(file) {
+        if (file != null && file.exists()) {
+            decodeSampledBitmapFromFile(file.absolutePath)
+        } else {
+            null
+        }
+    }
+
+    if (bitmap != null) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = block.alt.ifEmpty { "Image" },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.FillWidth
+            )
+            if (block.alt.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = block.alt,
+                    color = StitchTextMuted,
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    } else {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (block.alt.isNotBlank()) "🖼 ${block.alt} (${block.url})" else "🖼 ${block.url}",
+                    color = StitchTextMuted,
+                    fontSize = 13.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TableBlock(
+    block: MdBlock.TableBlock,
+    raw: String,
+    onWikilinkClick: ((String) -> Unit)?,
+    baseFontSizeSp: Int = 16
+) {
+    val extColors = LocalExtendedColors.current
     val columnWidths = remember(block) {
         val colCount = maxOf(block.headers.size, block.rows.maxOfOrNull { it.size } ?: 0)
         (0 until colCount).map { colIndex ->
@@ -890,11 +1160,12 @@ private fun TableBlock(block: MdBlock.TableBlock, raw: String, onWikilinkClick: 
             (maxLen * 10).coerceIn(100, 260).dp
         }
     }
+    val cellFontSize = (baseFontSizeSp - 2).coerceAtLeast(11).sp
 
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = StitchCardBg,
-        border = BorderStroke(1.dp, StitchBorder),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 60.dp)
@@ -907,40 +1178,42 @@ private fun TableBlock(block: MdBlock.TableBlock, raw: String, onWikilinkClick: 
         ) {
             Column {
                 Row(
-                    modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                    modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     block.headers.forEachIndexed { colIndex, h ->
                         val width = columnWidths.getOrElse(colIndex) { 120.dp }
-                        val annotatedHeader = remember(h, raw) { inlineMarkdown(h, raw) }
+                        val annotatedHeader = remember(h, raw, extColors) { inlineMarkdown(h, raw, extColors) }
                         TableCell(
                             annotatedText = annotatedHeader,
                             isHeader = true,
                             width = width,
+                            fontSize = cellFontSize,
                             align = block.alignments.getOrElse(colIndex) { Align.LEFT },
                             onWikilinkClick = onWikilinkClick
                         )
                     }
                 }
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 1.dp)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline, thickness = 1.dp)
 
                 block.rows.forEachIndexed { rowIndex, row ->
                     Row {
                         block.headers.indices.forEach { colIndex ->
                             val cellText = row.getOrElse(colIndex) { "" }
                             val width = columnWidths.getOrElse(colIndex) { 120.dp }
-                            val annotatedCell = remember(cellText, raw) { inlineMarkdown(cellText, raw) }
+                            val annotatedCell = remember(cellText, raw, extColors) { inlineMarkdown(cellText, raw, extColors) }
                             TableCell(
                                 annotatedText = annotatedCell,
                                 isHeader = false,
                                 width = width,
+                                fontSize = cellFontSize,
                                 align = block.alignments.getOrElse(colIndex) { Align.LEFT },
                                 onWikilinkClick = onWikilinkClick
                             )
                         }
                     }
                     if (rowIndex < block.rows.size - 1) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), thickness = 0.5.dp)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), thickness = 0.5.dp)
                     }
                 }
             }
@@ -953,6 +1226,7 @@ private fun TableCell(
     annotatedText: AnnotatedString,
     isHeader: Boolean,
     width: Dp,
+    fontSize: androidx.compose.ui.unit.TextUnit = 12.sp,
     align: Align,
     onWikilinkClick: ((String) -> Unit)?
 ) {
@@ -968,9 +1242,9 @@ private fun TableCell(
     ) {
         ClickableMarkdownText(
             annotatedString = annotatedText,
-            fontSize = if (isHeader) 13.sp else 12.sp,
+            fontSize = fontSize,
             fontWeight = if (isHeader) FontWeight.Bold else FontWeight.Normal,
-            lineHeight = 18.sp,
+            lineHeight = (fontSize.value * 1.45f).sp,
             color = MaterialTheme.colorScheme.onSurface,
             onWikilinkClick = onWikilinkClick
         )
@@ -981,7 +1255,12 @@ private fun TableCell(
 // Inline markdown parsing
 // ---------------------------------------------------------------------------
 
-internal fun inlineMarkdown(text: String, _rawFull: String = ""): AnnotatedString {
+internal fun inlineMarkdown(
+    text: String,
+    _rawFull: String = "",
+    extColors: SlashNoteExtendedColors? = null
+): AnnotatedString {
+    val isSoftPaper = extColors?.isSoftPaper == true
     return buildAnnotatedString {
         var last = 0
         INLINE_PATTERN.findAll(text).forEach { m ->
@@ -995,7 +1274,8 @@ internal fun inlineMarkdown(text: String, _rawFull: String = ""): AnnotatedStrin
                     val target = rawTarget.trim()
                     val label = if (target.contains("|")) target.substringAfter("|").trim() else target
                     pushStringAnnotation(tag = "WIKILINK", annotation = target)
-                    withStyle(SpanStyle(color = Color(0xFF2DD4BF), fontWeight = FontWeight.Medium, textDecoration = TextDecoration.Underline)) {
+                    val wlColor = if (isSoftPaper) extColors!!.linkColor else Color(0xFF2DD4BF)
+                    withStyle(SpanStyle(color = wlColor, fontWeight = FontWeight.Medium, textDecoration = TextDecoration.Underline)) {
                         append(label)
                     }
                     pop()
@@ -1013,7 +1293,9 @@ internal fun inlineMarkdown(text: String, _rawFull: String = ""): AnnotatedStrin
                     }
                 }
                 groups[4] != null -> {
-                    withStyle(SpanStyle(fontFamily = FontFamily.Monospace, color = StitchCodeHighlight, background = StitchCodeBg)) {
+                    val codeFg = if (isSoftPaper) extColors!!.syntaxKeyword else StitchCodeHighlight
+                    val codeBg = if (isSoftPaper) extColors!!.codeBg else StitchCodeBg
+                    withStyle(SpanStyle(fontFamily = FontFamily.Monospace, color = codeFg, background = codeBg)) {
                         append(groups[4]!!.value)
                     }
                 }
@@ -1021,13 +1303,19 @@ internal fun inlineMarkdown(text: String, _rawFull: String = ""): AnnotatedStrin
                     val label = groups[5]!!.value
                     val url = groups[6]!!.value
                     pushStringAnnotation(tag = "URL", annotation = url)
-                    withStyle(SpanStyle(color = Color(0xFF3B82F6), textDecoration = TextDecoration.Underline)) {
+                    val urlColor = if (isSoftPaper) extColors!!.linkColor else Color(0xFF3B82F6)
+                    withStyle(SpanStyle(color = urlColor, textDecoration = TextDecoration.Underline)) {
                         append(label)
                     }
                     pop()
                 }
                 groups[7] != null && groups[8] != null -> {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                    val boldStyle = if (isSoftPaper) {
+                        SpanStyle(fontWeight = FontWeight.Bold, color = extColors!!.boldAccent)
+                    } else {
+                        SpanStyle(fontWeight = FontWeight.Bold)
+                    }
+                    withStyle(boldStyle) {
                         append(groups[8]!!.value)
                     }
                 }
